@@ -26,19 +26,31 @@ type Event struct {
 }
 
 type Notifier struct {
-	Service *calendar.Service
-	Events  []*Event
+	Service                  *calendar.Service
+	Events                   []*Event
+	EventNotificationChannel *calendar.Channel
 }
 
-func (n *Notifier) fetchEvents() {
+func NewNotifier() *Notifier {
+	notifier := new(Notifier)
+	notifier.Service = authenticate()
+	notifier.Events = make([]*Event, 0)
+	return notifier
+}
+
+func (n *Notifier) updateEvents() error {
 	now := time.Now()
 	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local).Format(time.RFC3339)
 	end := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, time.Local).Format(time.RFC3339)
-
 	events, err := n.Service.Events.List("primary").TimeMin(start).TimeMax(end).Do()
 	if err != nil {
-		log.Printf("Error fetching ")
-		return
+		log.Printf("Error updating events. Error: %s\n", err.Error())
+		return err
+	}
+
+	// Double check if this is the right way
+	if len(n.Events) > 0 {
+		n.Events = nil
 	}
 
 	for _, ei := range events.Items {
@@ -50,6 +62,13 @@ func (n *Notifier) fetchEvents() {
 		}
 		n.Events = append(n.Events, e)
 	}
+
+	log.Println("Events in calendar:")
+	for _, e := range n.Events {
+		fmt.Println(e.Summary)
+	}
+
+	return nil
 }
 
 func getChannelId() string {
@@ -60,30 +79,25 @@ func getChannelId() string {
 }
 
 func main() {
-	notifier := new(Notifier)
-	notifier.Service = doAuth()
-	notifier.Events = make([]*Event, 0)
-	notifier.fetchEvents()
+	notifier := NewNotifier()
+	_ = notifier.updateEvents()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/webhook", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("Calendar updated!")
+		_ = notifier.updateEvents()
 		bodyBytes, err := io.ReadAll(r.Body)
 		if err != nil {
 			log.Println("Error reading request body")
 			return
 		}
-
 		// r.Body.Close()
 		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
 		bodyString := string(bodyBytes)
-		log.Printf("Response:\n%s\n", bodyString)
-
+		_ = bodyString
+		// log.Printf("Response:\n%s\n", bodyString)
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("200 OK"))
 	})
-
 	server := &http.Server{
 		Addr:    "localhost:8080",
 		Handler: mux,
@@ -102,7 +116,7 @@ func main() {
 		err := server.ListenAndServe()
 		if err != nil {
 			if errors.Is(err, http.ErrServerClosed) {
-				fmt.Println("Shutting down server gracefully")
+				log.Println("Shutting down server gracefully")
 				return
 			}
 			log.Fatalf("ListenAndServe Error: %s\n", err)
@@ -116,16 +130,16 @@ func main() {
 		_ = server.Shutdown(context.Background())
 	}()
 
-	channel := &calendar.Channel{
-		Id:      getChannelId(),
-		Address: "https://ffe5-2405-201-8011-7043-ac8f-e0f4-a4f1-9fbe.ngrok-free.app/webhook",
-		Type:    "web_hook",
-	}
-
-	_, err := notifier.Service.Events.Watch("primary", channel).Do()
+	ch, err := notifier.Service.Events.Watch("primary", &calendar.Channel{
+		Id:         "test-channel-6",
+		Address:    "https://8515-2405-201-8011-7043-8c50-c84-9901-5609.ngrok-free.app/webhook",
+		Expiration: time.Now().Add(time.Minute).UnixMilli(),
+		Type:       "web_hook",
+	}).Do()
 	if err != nil {
-		log.Fatal("Error watching events: %s\n", err.Error())
+		log.Fatalf("Error watching events: %s\n", err.Error())
 	}
+	notifier.EventNotificationChannel = ch
 
 	wg.Wait()
 }

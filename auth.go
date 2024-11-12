@@ -69,7 +69,7 @@ func saveToken(path string, token *oauth2.Token) {
 	json.NewEncoder(f).Encode(token)
 }
 
-func doAuth() *calendar.Service {
+func authenticate() *calendar.Service {
 	ctx := context.Background()
 	b, err := os.ReadFile("credentials.json")
 	if err != nil {
