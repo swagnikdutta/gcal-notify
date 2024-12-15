@@ -23,6 +23,7 @@ func NewNotifier() *Notifier {
 	return &Notifier{
 		Service:                  authenticate(),
 		Events:                   make([]*Event, 0),
+		MergedEvents:             make([]*Event, 0),
 		EventNotificationChannel: nil,
 		Wg:                       &sync.WaitGroup{},
 	}
@@ -47,17 +48,47 @@ func (n *Notifier) updateEvents() error {
 			Summary:     ei.Summary,
 			Description: ei.Description,
 			StartTime:   ei.Start.DateTime,
-			EndTime:     ei.Start.DateTime,
+			EndTime:     ei.End.DateTime,
 		}
 		n.Events = append(n.Events, e)
 	}
 
+	// TODO: sort the events by start time
 	log.Println("Events in calendar:")
 	for _, e := range n.Events {
-		fmt.Println(e.Summary)
+		fmt.Printf("Event: %s\nStart: %s\nEnd: %s\n\n", e.Summary, e.StartTime, e.EndTime)
 	}
 
-	// merge intervals
+	if len(n.MergedEvents) > 0 {
+		n.MergedEvents = nil
+	}
+
+	for _, currEvent := range n.Events {
+		if len(n.MergedEvents) == 0 {
+			n.MergedEvents = append(n.MergedEvents, currEvent)
+			continue
+		}
+
+		totalMergedEvents := len(n.MergedEvents)
+		lastMergedEvent := n.MergedEvents[totalMergedEvents-1]
+
+		if lastMergedEvent.overlapsWith(currEvent) {
+			e := &Event{
+				Summary:     fmt.Sprintf("%s:%s", lastMergedEvent.Summary, currEvent.Summary),
+				Description: fmt.Sprintf("%s:%s", lastMergedEvent.Description, currEvent.Description),
+				StartTime:   lastMergedEvent.StartTime,
+				EndTime:     currEvent.EndTime,
+			}
+			n.MergedEvents[totalMergedEvents-1] = e
+		} else {
+			n.MergedEvents = append(n.MergedEvents, currEvent)
+		}
+	}
+
+	log.Println("Merged events in calendar:")
+	for _, e := range n.MergedEvents {
+		fmt.Printf("Event: %s\nStart: %s\nEnd: %s\n\n", e.Summary, e.StartTime, e.EndTime)
+	}
 
 	return nil
 }
@@ -125,10 +156,10 @@ func main() {
 	}()
 
 	ch, err := notifier.Service.Events.Watch("primary", &calendar.Channel{
-		Id:         "test-channel-6",
-		Address:    "https://cab2-106-51-160-154.ngrok-free.app/api/v1/events/notify",
-		Expiration: time.Now().Add(time.Minute).UnixMilli(),
-		Type:       channelTypeWebhook,
+		Id:      "test-channel-6",
+		Address: "https://cab2-106-51-160-154.ngrok-free.app/api/v1/events/notify",
+		// Expiration: time.Now().Add(time.Minute).UnixMilli(),
+		Type: channelTypeWebhook,
 	}).Do()
 	if err != nil {
 		log.Fatalf("Error watching events: %s\n", err.Error())
