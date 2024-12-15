@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -18,24 +17,15 @@ import (
 	"google.golang.org/api/calendar/v3"
 )
 
-type Event struct {
-	Summary     string
-	Description string
-	StartTime   string
-	EndTime     string
-}
-
-type Notifier struct {
-	Service                  *calendar.Service
-	Events                   []*Event
-	EventNotificationChannel *calendar.Channel
-}
+const channelTypeWebhook = "web_hook"
 
 func NewNotifier() *Notifier {
-	notifier := new(Notifier)
-	notifier.Service = authenticate()
-	notifier.Events = make([]*Event, 0)
-	return notifier
+	return &Notifier{
+		Service:                  authenticate(),
+		Events:                   make([]*Event, 0),
+		EventNotificationChannel: nil,
+		Wg:                       &sync.WaitGroup{},
+	}
 }
 
 func (n *Notifier) updateEvents() error {
@@ -48,11 +38,10 @@ func (n *Notifier) updateEvents() error {
 		return err
 	}
 
-	// Double check if this is the right way
+	// Double check if this is the right way to empty a slice.
 	if len(n.Events) > 0 {
 		n.Events = nil
 	}
-
 	for _, ei := range events.Items {
 		e := &Event{
 			Summary:     ei.Summary,
@@ -68,52 +57,57 @@ func (n *Notifier) updateEvents() error {
 		fmt.Println(e.Summary)
 	}
 
+	// merge intervals
+
 	return nil
 }
 
-func getChannelId() string {
-	splits := strings.Split(time.Now().String(), " ")
-	splits2 := strings.Split(splits[1], ".")[0]
-	s := strings.ReplaceAll(splits2, ":", "-")
-	return s
+func (n *Notifier) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	_ = n.updateEvents()
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		log.Println("Error reading request body")
+		return
+	}
+	// r.Body.Close()
+	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+	bodyString := string(bodyBytes)
+	_ = bodyString
+	// log.Printf("Response:\n%s\n", bodyString)
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("200 OK"))
+}
+
+func NewRequestMultiplexer(h http.HandlerFunc) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/events/notify", h)
+
+	var handler http.Handler = mux
+	// add middlewares if needed
+	// handler = someMiddleware(handler)
+	return handler
 }
 
 func main() {
 	notifier := NewNotifier()
 	_ = notifier.updateEvents()
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/webhook", func(w http.ResponseWriter, r *http.Request) {
-		_ = notifier.updateEvents()
-		bodyBytes, err := io.ReadAll(r.Body)
-		if err != nil {
-			log.Println("Error reading request body")
-			return
-		}
-		// r.Body.Close()
-		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-		bodyString := string(bodyBytes)
-		_ = bodyString
-		// log.Printf("Response:\n%s\n", bodyString)
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("200 OK"))
-	})
-	server := &http.Server{
-		Addr:    "localhost:8080",
-		Handler: mux,
-	}
-
+	// TODO: why signal channel needs to be buffered?
 	stopCh := make(chan os.Signal, 1)
 	signal.Notify(stopCh, syscall.SIGINT, syscall.SIGTERM)
 
-	var wg sync.WaitGroup
-	wg.Add(2)
+	notifier.Wg.Add(2)
 
+	httpServer := &http.Server{
+		Addr:    "localhost:8080",
+		Handler: NewRequestMultiplexer(notifier.ServeHTTP),
+	}
 	// goroutine to run http server
 	go func() {
-		defer wg.Done()
-		log.Println("Starting http server")
-		err := server.ListenAndServe()
+		defer notifier.Wg.Done()
+		log.Printf("HTTP server listening on %s\n", httpServer.Addr)
+
+		err := httpServer.ListenAndServe()
 		if err != nil {
 			if errors.Is(err, http.ErrServerClosed) {
 				log.Println("Shutting down server gracefully")
@@ -125,21 +119,21 @@ func main() {
 
 	// goroutine to handle manual server shutdown
 	go func() {
-		defer wg.Done()
+		defer notifier.Wg.Done()
 		<-stopCh
-		_ = server.Shutdown(context.Background())
+		_ = httpServer.Shutdown(context.Background())
 	}()
 
 	ch, err := notifier.Service.Events.Watch("primary", &calendar.Channel{
 		Id:         "test-channel-6",
-		Address:    "https://8515-2405-201-8011-7043-8c50-c84-9901-5609.ngrok-free.app/webhook",
+		Address:    "https://cab2-106-51-160-154.ngrok-free.app/api/v1/events/notify",
 		Expiration: time.Now().Add(time.Minute).UnixMilli(),
-		Type:       "web_hook",
+		Type:       channelTypeWebhook,
 	}).Do()
 	if err != nil {
 		log.Fatalf("Error watching events: %s\n", err.Error())
 	}
 	notifier.EventNotificationChannel = ch
 
-	wg.Wait()
+	notifier.Wg.Wait()
 }

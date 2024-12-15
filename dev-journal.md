@@ -1,0 +1,6 @@
+- [DONE] ensure channel is working
+- Understand why channel is working?
+- [DONE] fetch all events, store them locally
+- merge intervals
+- read values from yaml file
+- Close the channel on server shutdown
