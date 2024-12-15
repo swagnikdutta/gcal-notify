@@ -14,10 +14,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
 	"google.golang.org/api/calendar/v3"
 )
 
-const channelTypeWebhook = "web_hook"
+const (
+	channelTypeWebhook          = "web_hook"
+	notificationChannelEndpoint = "NOTIFICATION_CHANNEL_ENDPOINT"
+	calendarId                  = "CALENDAR_ID"
+)
 
 func NewNotifier() *Notifier {
 	return &Notifier{
@@ -103,8 +108,7 @@ func (n *Notifier) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// r.Body.Close()
 	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 	bodyString := string(bodyBytes)
-	_ = bodyString
-	// log.Printf("Response:\n%s\n", bodyString)
+	log.Printf("bodyString: %s", bodyString)
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("200 OK"))
 }
@@ -120,6 +124,10 @@ func NewRequestMultiplexer(h http.HandlerFunc) http.Handler {
 }
 
 func main() {
+	if err := godotenv.Load(); err != nil {
+		log.Fatal("Error loading .env file")
+	}
+
 	notifier := NewNotifier()
 	_ = notifier.updateEvents()
 
@@ -155,9 +163,9 @@ func main() {
 		_ = httpServer.Shutdown(context.Background())
 	}()
 
-	ch, err := notifier.Service.Events.Watch("primary", &calendar.Channel{
-		Id:      "test-channel-6",
-		Address: "https://cab2-106-51-160-154.ngrok-free.app/api/v1/events/notify",
+	ch, err := notifier.Service.Events.Watch(os.Getenv(calendarId), &calendar.Channel{
+		Id:      "test-channel-7",
+		Address: fmt.Sprintf("%s/api/v1/events/notify", os.Getenv(notificationChannelEndpoint)),
 		// Expiration: time.Now().Add(time.Minute).UnixMilli(),
 		Type: channelTypeWebhook,
 	}).Do()
