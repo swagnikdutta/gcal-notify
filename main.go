@@ -142,7 +142,7 @@ func main() {
 		Handler: NewRequestMultiplexer(notifier.ServeHTTP),
 	}
 	// goroutine to run http server
-	go func() {
+	go func(n *Notifier) {
 		defer notifier.Wg.Done()
 		log.Printf("HTTP server listening on %s\n", httpServer.Addr)
 
@@ -150,11 +150,17 @@ func main() {
 		if err != nil {
 			if errors.Is(err, http.ErrServerClosed) {
 				log.Println("Shutting down server gracefully")
+				// TODO: handle channel closure
+				err3 := n.Service.Channels.Stop(n.EventNotificationChannel).Do()
+				if err3 != nil {
+					log.Println("Error closing channel")
+				}
+				log.Println("Closed notification channel successfully.")
 				return
 			}
 			log.Fatalf("ListenAndServe Error: %s\n", err)
 		}
-	}()
+	}(notifier)
 
 	// goroutine to handle manual server shutdown
 	go func() {
@@ -164,7 +170,7 @@ func main() {
 	}()
 
 	ch, err := notifier.Service.Events.Watch(os.Getenv(calendarId), &calendar.Channel{
-		Id:      "test-channel-7",
+		Id:      "test-channel-8",
 		Address: fmt.Sprintf("%s/api/v1/events/notify", os.Getenv(notificationChannelEndpoint)),
 		// Expiration: time.Now().Add(time.Minute).UnixMilli(),
 		Type: channelTypeWebhook,

@@ -2,5 +2,6 @@
 - Understand why channel is working?
 - [DONE] fetch all events, store them locally
 - [DONE] merge intervals
-- read values from yaml file
-- Close the channel on server shutdown
+- [DONE] read values from env file
+- [DONE] Close the channel on server shutdown
+- Add authorisation check to your webhook endpoint
