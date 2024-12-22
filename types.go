@@ -34,6 +34,7 @@ func (e1 *Event) overlapsWith(e2 *Event) bool {
 type Notifier struct {
 	Service                  *calendar.Service
 	Events                   []*Event
+	UpcomingEvent            *Event
 	MergedEvents             []*Event
 	EventNotificationChannel *calendar.Channel
 	Wg                       *sync.WaitGroup

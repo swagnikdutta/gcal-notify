@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -29,6 +30,7 @@ func NewNotifier() *Notifier {
 		Service:                  authenticate(),
 		Events:                   make([]*Event, 0),
 		MergedEvents:             make([]*Event, 0),
+		UpcomingEvent:            nil,
 		EventNotificationChannel: nil,
 		Wg:                       &sync.WaitGroup{},
 	}
@@ -58,10 +60,17 @@ func (n *Notifier) updateEvents() error {
 		n.Events = append(n.Events, e)
 	}
 
-	// TODO: sort the events by start time
+	// TODO: sort the events by start time. Seems essential.
+	slices.SortFunc(n.Events, func(a, b *Event) int {
+		aStartTime, _ := time.Parse(time.RFC3339, a.StartTime)
+		bStartTime, _ := time.Parse(time.RFC3339, b.StartTime)
+
+		return aStartTime.Compare(bStartTime)
+	})
+
 	log.Println("Events in calendar:")
 	for _, e := range n.Events {
-		fmt.Printf("Event: %s\nStart: %s\nEnd: %s\n\n", e.Summary, e.StartTime, e.EndTime)
+		log.Printf("Event: %s\tStart: %s\tEnd: %s", e.Summary, e.StartTime, e.EndTime)
 	}
 
 	if len(n.MergedEvents) > 0 {
@@ -92,8 +101,26 @@ func (n *Notifier) updateEvents() error {
 
 	log.Println("Merged events in calendar:")
 	for _, e := range n.MergedEvents {
-		fmt.Printf("Event: %s\nStart: %s\nEnd: %s\n\n", e.Summary, e.StartTime, e.EndTime)
+		log.Printf("Event: %s\tStart: %s\tEnd: %s", e.Summary, e.StartTime, e.EndTime)
 	}
+
+	var upcomingEvent *Event
+	for _, me := range n.MergedEvents {
+		if upcomingEvent == nil {
+			upcomingEvent = me
+			continue
+		}
+
+		currentTime := time.Now()
+		meStartTime, _ := time.Parse(time.RFC3339, me.StartTime)
+		upcomingEventStartTime, _ := time.Parse(time.RFC3339, upcomingEvent.StartTime)
+
+		if currentTime.Before(meStartTime) && meStartTime.Before(upcomingEventStartTime) {
+			upcomingEvent = me
+		}
+	}
+
+	log.Printf("Upcoming event is: %q, starts at: %q", upcomingEvent.Summary, upcomingEvent.StartTime)
 
 	return nil
 }

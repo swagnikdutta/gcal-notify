@@ -5,3 +5,5 @@
 - [DONE] read values from env file
 - [DONE] Close the channel on server shutdown
 - Add authorisation check to your webhook endpoint
+- [DONE] create upcoming event
+- [DONE] sort fetched events
