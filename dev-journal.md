@@ -7,3 +7,9 @@
 - Add authorisation check to your webhook endpoint
 - [DONE] create upcoming event
 - [DONE] sort fetched events
+- reduce or minify logs
+- ticker logic to check for running events
+- restart at midnight everyday
+- update upcoming event
+- Investigate the crash upon event deletion - log the error - cancelled event check
+- Sometimes the channel might not be closed successfully - simulate the scenario and fix.

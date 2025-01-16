@@ -1,19 +1,14 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"slices"
-	"sync"
 	"syscall"
-	"time"
 
 	"github.com/joho/godotenv"
 	"google.golang.org/api/calendar/v3"
@@ -23,122 +18,9 @@ const (
 	channelTypeWebhook          = "web_hook"
 	notificationChannelEndpoint = "NOTIFICATION_CHANNEL_ENDPOINT"
 	calendarId                  = "CALENDAR_ID"
+	bulbStateOff                = "off"
+	bulbStateOn                 = "on"
 )
-
-func NewNotifier() *Notifier {
-	return &Notifier{
-		Service:                  authenticate(),
-		Events:                   make([]*Event, 0),
-		MergedEvents:             make([]*Event, 0),
-		UpcomingEvent:            nil,
-		EventNotificationChannel: nil,
-		Wg:                       &sync.WaitGroup{},
-	}
-}
-
-func (n *Notifier) updateEvents() error {
-	now := time.Now()
-	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local).Format(time.RFC3339)
-	end := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, time.Local).Format(time.RFC3339)
-	events, err := n.Service.Events.List("primary").TimeMin(start).TimeMax(end).Do()
-	if err != nil {
-		log.Printf("Error updating events. Error: %s\n", err.Error())
-		return err
-	}
-
-	// Double check if this is the right way to empty a slice.
-	if len(n.Events) > 0 {
-		n.Events = nil
-	}
-	for _, ei := range events.Items {
-		e := &Event{
-			Summary:     ei.Summary,
-			Description: ei.Description,
-			StartTime:   ei.Start.DateTime,
-			EndTime:     ei.End.DateTime,
-		}
-		n.Events = append(n.Events, e)
-	}
-
-	// TODO: sort the events by start time. Seems essential.
-	slices.SortFunc(n.Events, func(a, b *Event) int {
-		aStartTime, _ := time.Parse(time.RFC3339, a.StartTime)
-		bStartTime, _ := time.Parse(time.RFC3339, b.StartTime)
-
-		return aStartTime.Compare(bStartTime)
-	})
-
-	log.Println("Events in calendar:")
-	for _, e := range n.Events {
-		log.Printf("Event: %s\tStart: %s\tEnd: %s", e.Summary, e.StartTime, e.EndTime)
-	}
-
-	if len(n.MergedEvents) > 0 {
-		n.MergedEvents = nil
-	}
-
-	for _, currEvent := range n.Events {
-		if len(n.MergedEvents) == 0 {
-			n.MergedEvents = append(n.MergedEvents, currEvent)
-			continue
-		}
-
-		totalMergedEvents := len(n.MergedEvents)
-		lastMergedEvent := n.MergedEvents[totalMergedEvents-1]
-
-		if lastMergedEvent.overlapsWith(currEvent) {
-			e := &Event{
-				Summary:     fmt.Sprintf("%s:%s", lastMergedEvent.Summary, currEvent.Summary),
-				Description: fmt.Sprintf("%s:%s", lastMergedEvent.Description, currEvent.Description),
-				StartTime:   lastMergedEvent.StartTime,
-				EndTime:     currEvent.EndTime,
-			}
-			n.MergedEvents[totalMergedEvents-1] = e
-		} else {
-			n.MergedEvents = append(n.MergedEvents, currEvent)
-		}
-	}
-
-	log.Println("Merged events in calendar:")
-	for _, e := range n.MergedEvents {
-		log.Printf("Event: %s\tStart: %s\tEnd: %s", e.Summary, e.StartTime, e.EndTime)
-	}
-
-	var upcomingEvent *Event
-	for _, me := range n.MergedEvents {
-		if upcomingEvent == nil {
-			upcomingEvent = me
-			continue
-		}
-
-		currentTime := time.Now()
-		meStartTime, _ := time.Parse(time.RFC3339, me.StartTime)
-		upcomingEventStartTime, _ := time.Parse(time.RFC3339, upcomingEvent.StartTime)
-
-		if currentTime.Before(meStartTime) && meStartTime.Before(upcomingEventStartTime) {
-			upcomingEvent = me
-		}
-	}
-
-	log.Printf("Upcoming event is: %q, starts at: %q", upcomingEvent.Summary, upcomingEvent.StartTime)
-
-	return nil
-}
-
-func (n *Notifier) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	_ = n.updateEvents()
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err != nil {
-		log.Println("Error reading request body")
-		return
-	}
-	// r.Body.Close()
-	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-	bodyString := string(bodyBytes)
-	log.Printf("bodyString: %s", bodyString)
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("200 OK"))
-}
 
 func NewRequestMultiplexer(h http.HandlerFunc) http.Handler {
 	mux := http.NewServeMux()
@@ -156,13 +38,16 @@ func main() {
 	}
 
 	notifier := NewNotifier()
-	_ = notifier.updateEvents()
+	err := notifier.updateEvents()
+	if err != nil {
+		log.Fatalf("Error updating events: %s", err)
+	}
 
 	// TODO: why signal channel needs to be buffered?
 	stopCh := make(chan os.Signal, 1)
 	signal.Notify(stopCh, syscall.SIGINT, syscall.SIGTERM)
 
-	notifier.Wg.Add(2)
+	notifier.Wg.Add(3)
 
 	httpServer := &http.Server{
 		Addr:    "localhost:8080",
@@ -177,12 +62,15 @@ func main() {
 		if err != nil {
 			if errors.Is(err, http.ErrServerClosed) {
 				log.Println("Shutting down server gracefully")
-				// TODO: handle channel closure
+
 				err3 := n.Service.Channels.Stop(n.EventNotificationChannel).Do()
 				if err3 != nil {
 					log.Println("Error closing channel")
+				} else {
+					// We might not need to print this
+					log.Println("Closed notification channel successfully.")
 				}
-				log.Println("Closed notification channel successfully.")
+				notifier.done <- struct{}{}
 				return
 			}
 			log.Fatalf("ListenAndServe Error: %s\n", err)
@@ -197,15 +85,16 @@ func main() {
 	}()
 
 	ch, err := notifier.Service.Events.Watch(os.Getenv(calendarId), &calendar.Channel{
-		Id:      "test-channel-8",
+		Id:      "test-channel-9",
 		Address: fmt.Sprintf("%s/api/v1/events/notify", os.Getenv(notificationChannelEndpoint)),
-		// Expiration: time.Now().Add(time.Minute).UnixMilli(),
-		Type: channelTypeWebhook,
+		Type:    channelTypeWebhook,
 	}).Do()
 	if err != nil {
 		log.Fatalf("Error watching events: %s\n", err.Error())
 	}
 	notifier.EventNotificationChannel = ch
+
+	go notifier.watch()
 
 	notifier.Wg.Wait()
 }
