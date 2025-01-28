@@ -32,69 +32,88 @@ func NewRequestMultiplexer(h http.HandlerFunc) http.Handler {
 	return handler
 }
 
+// This function essentially returns a channel - through which we will receive certain
+// signals, in the future. We just need to keep listening to the channel for those signals.
+func setupSignalHandler() chan os.Signal {
+	stopCh := make(chan os.Signal, 1)
+	signal.Notify(stopCh, syscall.SIGINT, syscall.SIGTERM)
+	return stopCh
+}
+
+func createHTTPServer(notifier *Notifier) *http.Server {
+	return &http.Server{
+		// TODO: replace with actual endpoint
+		Addr:    "localhost:8080",
+		Handler: NewRequestMultiplexer(notifier.ServeHTTP),
+	}
+}
+
+func startHTTPServer(server *http.Server, notifier *Notifier) {
+	notifier.Wg.Add(1)
+	go func() {
+		defer notifier.Wg.Done()
+		log.Printf("HTTP server listening on %s\n", server.Addr)
+
+		err := server.ListenAndServe()
+		if err != nil {
+			if errors.Is(err, http.ErrServerClosed) {
+				chanStopErr := notifier.Service.Channels.Stop(notifier.EventNotificationChannel).Do()
+				if chanStopErr != nil {
+					log.Printf("error stopping notification channel: %v", chanStopErr)
+				}
+
+				log.Println("shutting down server gracefully")
+				notifier.done <- struct{}{}
+				return
+			}
+			log.Fatalf("ListenAndServe Error: %s\n", err)
+		}
+	}()
+}
+
+func waitForShutdown(server *http.Server, notifier *Notifier, stopCh chan os.Signal) {
+	notifier.Wg.Add(1)
+	go func() {
+		defer notifier.Wg.Done()
+		<-stopCh
+		_ = server.Shutdown(context.Background())
+	}()
+	notifier.Wg.Wait() // blocks
+}
+
+func startWatchingEvents(notifier *Notifier) {
+	notifier.Wg.Add(1)
+	go func() {
+		defer notifier.Wg.Done()
+		ch, err := notifier.Service.Events.Watch(os.Getenv(calendarId), &calendar.Channel{
+			Id:      "test-channel-9",
+			Address: fmt.Sprintf("%s/api/v1/events/notify", os.Getenv(notificationChannelEndpoint)),
+			Type:    channelTypeWebhook,
+		}).Do()
+		if err != nil {
+			log.Fatalf("Error watching events: %s\n", err.Error())
+		}
+
+		notifier.EventNotificationChannel = ch
+		notifier.watch()
+	}()
+}
+
 func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Fatal("Error loading .env file")
 	}
 
 	notifier := NewNotifier()
-	err := notifier.updateEvents()
+	err := notifier.syncCalendar()
 	if err != nil {
-		log.Fatalf("Error updating events: %s", err)
+		log.Fatalf("Error syncing calendar: %s", err)
 	}
 
-	// TODO: why signal channel needs to be buffered?
-	stopCh := make(chan os.Signal, 1)
-	signal.Notify(stopCh, syscall.SIGINT, syscall.SIGTERM)
+	stopCh := setupSignalHandler()
+	httpServer := createHTTPServer(notifier)
+	startHTTPServer(httpServer, notifier)
 
-	notifier.Wg.Add(3)
-
-	httpServer := &http.Server{
-		Addr:    "localhost:8080",
-		Handler: NewRequestMultiplexer(notifier.ServeHTTP),
-	}
-	// goroutine to run http server
-	go func(n *Notifier) {
-		defer notifier.Wg.Done()
-		log.Printf("HTTP server listening on %s\n", httpServer.Addr)
-
-		err := httpServer.ListenAndServe()
-		if err != nil {
-			if errors.Is(err, http.ErrServerClosed) {
-				log.Println("Shutting down server gracefully")
-
-				err3 := n.Service.Channels.Stop(n.EventNotificationChannel).Do()
-				if err3 != nil {
-					log.Println("Error closing channel")
-				} else {
-					// We might not need to print this
-					log.Println("Closed notification channel successfully.")
-				}
-				notifier.done <- struct{}{}
-				return
-			}
-			log.Fatalf("ListenAndServe Error: %s\n", err)
-		}
-	}(notifier)
-
-	// goroutine to handle manual server shutdown
-	go func() {
-		defer notifier.Wg.Done()
-		<-stopCh
-		_ = httpServer.Shutdown(context.Background())
-	}()
-
-	ch, err := notifier.Service.Events.Watch(os.Getenv(calendarId), &calendar.Channel{
-		Id:      "test-channel-9",
-		Address: fmt.Sprintf("%s/api/v1/events/notify", os.Getenv(notificationChannelEndpoint)),
-		Type:    channelTypeWebhook,
-	}).Do()
-	if err != nil {
-		log.Fatalf("Error watching events: %s\n", err.Error())
-	}
-	notifier.EventNotificationChannel = ch
-
-	go notifier.watch()
-
-	notifier.Wg.Wait()
+	startWatchingEvents(notifier)
+	waitForShutdown(httpServer, notifier, stopCh)
 }

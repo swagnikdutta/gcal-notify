@@ -25,10 +25,12 @@ func (e1 *Event) overlapsWith(e2 *Event) bool {
 	if err != nil {
 		log.Printf("Error parsing time: %s\n", err)
 	}
+
 	e2StartTime, _ := time.Parse(time.RFC3339, e2.StartTime)
 	if err != nil {
 		log.Printf("Error parsing time: %s\n", err)
 	}
+
 	if e1EndTime.Compare(e2StartTime) == -1 {
 		return false
 	}
@@ -61,19 +63,22 @@ func NewNotifier() *Notifier {
 	}
 }
 
-func (n *Notifier) updateEvents() error {
+func (n *Notifier) syncCalendar() error {
 	now := time.Now()
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local).Format(time.RFC3339)
 	endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, time.Local).Format(time.RFC3339)
+
 	events, err := n.Service.Events.List("primary").TimeMin(startOfDay).TimeMax(endOfDay).Do()
 	if err != nil {
 		log.Printf("Error updating events. Error: %s\n", err.Error())
 		return err
 	}
+
 	// TODO: Double check if this is the right way to empty a slice.
 	if len(n.Events) > 0 {
 		n.Events = nil
 	}
+
 	for _, ei := range events.Items {
 		// TODO: read the documentation for the statuses
 		if ei.Status == "cancelled" {
@@ -87,16 +92,13 @@ func (n *Notifier) updateEvents() error {
 		}
 		n.Events = append(n.Events, e)
 	}
+
 	slices.SortFunc(n.Events, func(e1, e2 *Event) int {
 		a, _ := time.Parse(time.RFC3339, e1.StartTime)
 		b, _ := time.Parse(time.RFC3339, e2.StartTime)
 		return a.Compare(b)
 	})
 
-	// log.Println("Events in calendar:")
-	// for _, e := range n.Events {
-	// 	log.Printf("Event: %s\tStart: %s\tEnd: %s", e.Summary, e.StartTime, e.EndTime)
-	// }
 	if len(n.MergedEvents) > 0 {
 		n.MergedEvents = nil
 	}
@@ -106,8 +108,10 @@ func (n *Notifier) updateEvents() error {
 			n.MergedEvents = append(n.MergedEvents, currEvent)
 			continue
 		}
+
 		totalMergedEvents := len(n.MergedEvents)
 		lastMergedEvent := n.MergedEvents[totalMergedEvents-1]
+
 		if lastMergedEvent.overlapsWith(currEvent) {
 			e := &Event{
 				Summary:     fmt.Sprintf("%s:%s", lastMergedEvent.Summary, currEvent.Summary),
@@ -120,10 +124,7 @@ func (n *Notifier) updateEvents() error {
 			n.MergedEvents = append(n.MergedEvents, currEvent)
 		}
 	}
-	// log.Println("Merged events in calendar:")
-	// for _, e := range n.MergedEvents {
-	// 	log.Printf("Event: %s\tStart: %s\tEnd: %s", e.Summary, e.StartTime, e.EndTime)
-	// }
+
 	n.setUpcomingEvent()
 	return nil
 }
@@ -139,6 +140,8 @@ func (n *Notifier) setUpcomingEvent() {
 		mergedEventStartTime, _ := time.Parse(time.RFC3339, mergedEvent.StartTime)
 		upcomingEventStartTime, _ := time.Parse(time.RFC3339, n.UpcomingEvent.StartTime)
 		if currentTime.Before(mergedEventStartTime) && mergedEventStartTime.Before(upcomingEventStartTime) {
+			// now ---> mergedEvent ---> upcomingEvent
+			// if the mergedEvent falls between `now` and `upcomingEvent`, then set upcomingEvent = mergedEvent
 			n.UpcomingEvent = mergedEvent
 		}
 	}
@@ -169,32 +172,40 @@ func (n *Notifier) watch() {
 	for {
 		select {
 		case <-n.done:
-			fmt.Println("Stopping the ticker")
+			log.Println("stopping the ticker")
 			return
+
 		case <-n.t.C:
 			if n.UpcomingEvent == nil {
 				continue
 			}
-			fmt.Println("upcoming event: ", n.UpcomingEvent.Summary)
 			if n.upcomingEventStarted() {
-				fmt.Println("upcoming event has started")
+				log.Printf("Event %q in progress", n.UpcomingEvent.Summary)
+				// This is where you notify subscribers - if there are any - that the next event has begun
+				// and the light bulb must be on
 				if n.bulbState == bulbStateOff {
 					n.bulbState = bulbStateOn
 				}
-				// notify all
 			}
 			if n.upcomingEventEnded() {
-				fmt.Println("upcoming event has ended")
+				log.Printf("Event %q has ended", n.UpcomingEvent.Summary)
+				// This is where you notify subscribers - if there are any - that the next event has ended
+				// and the light bulb must be off
 				n.bulbState = bulbStateOff
-				// update upcoming event
 				n.setUpcomingEvent()
 			}
 		}
 	}
 }
 
+// The controller
 func (n *Notifier) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	_ = n.updateEvents()
+	err := n.syncCalendar()
+	if err != nil {
+		log.Println("error syncing calendar")
+	}
+
+	// TODO: check if any of the following is needed?
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Println("Error reading request body")
