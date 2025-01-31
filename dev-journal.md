@@ -1,18 +1,10 @@
-- [DONE] ensure channel is working
+### Todos
 - Understand why channel is working?
-- [DONE] fetch all events, store them locally
-- [DONE] merge intervals
-- [DONE] read values from env file
-- [DONE] Close the channel on server shutdown
 - Add authorisation check to your webhook endpoint
-- [DONE] create upcoming event
-- [DONE] sort fetched events
 - reduce or minify logs
-- ticker logic to check for running events
-- restart at midnight everyday
-- update upcoming event
 - Investigate the crash upon event deletion - log the error - cancelled event check
 - Sometimes the channel might not be closed successfully - simulate the scenario and fix.
+- Find out what's the upcoming event is set to after the last event of the day?
 
 ### since i keep on forgetting
 

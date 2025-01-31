@@ -46,7 +46,9 @@ type Notifier struct {
 	EventNotificationChannel *calendar.Channel
 	Wg                       *sync.WaitGroup
 	t                        *time.Ticker
+	hourTicker               *time.Ticker
 	done                     chan struct{}
+	currentDay               int
 }
 
 func NewNotifier() *Notifier {
@@ -59,7 +61,9 @@ func NewNotifier() *Notifier {
 		EventNotificationChannel: nil,
 		Wg:                       &sync.WaitGroup{},
 		t:                        time.NewTicker(1 * time.Minute),
+		hourTicker:               time.NewTicker(1 * time.Hour),
 		done:                     make(chan struct{}),
+		currentDay:               time.Now().Day(),
 	}
 }
 
@@ -145,7 +149,7 @@ func (n *Notifier) setUpcomingEvent() {
 			n.UpcomingEvent = mergedEvent
 		}
 	}
-	log.Printf("Upcoming event is: %q, starts at: %q", n.UpcomingEvent.Summary, n.UpcomingEvent.StartTime)
+	log.Printf("Upcoming event is: %q, starts at: %q\n", n.UpcomingEvent.Summary, n.UpcomingEvent.StartTime)
 }
 
 func (n *Notifier) upcomingEventStarted() bool {
@@ -176,9 +180,22 @@ func (n *Notifier) watch() {
 			return
 
 		case <-n.t.C:
+
+			// this takes care of refreshing the calendar post midnight
+			if n.currentDay != time.Now().Day() {
+				log.Println("syncing calendar post midnight")
+				n.currentDay = time.Now().Day()
+				err := n.syncCalendar()
+				if err != nil {
+					log.Println("error syncing calendar")
+				}
+				n.UpcomingEvent = nil
+			}
+
 			if n.UpcomingEvent == nil {
 				continue
 			}
+
 			if n.upcomingEventStarted() {
 				log.Printf("Event %q in progress", n.UpcomingEvent.Summary)
 				// This is where you notify subscribers - if there are any - that the next event has begun
@@ -187,6 +204,7 @@ func (n *Notifier) watch() {
 					n.bulbState = bulbStateOn
 				}
 			}
+
 			if n.upcomingEventEnded() {
 				log.Printf("Event %q has ended", n.UpcomingEvent.Summary)
 				// This is where you notify subscribers - if there are any - that the next event has ended
