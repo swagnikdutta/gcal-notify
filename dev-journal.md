@@ -5,6 +5,8 @@
 - Investigate the crash upon event deletion - log the error - cancelled event check
 - Sometimes the channel might not be closed successfully - simulate the scenario and fix.
 - Find out what's the upcoming event is set to after the last event of the day?
+- In case of an early program crash - maybe you stopped the debugger mid-way - then the channel name doesn't get closed properly. Handle that.
+- I see a goroutine error on shutting down the server. Fix it.
 
 ### since i keep on forgetting
 

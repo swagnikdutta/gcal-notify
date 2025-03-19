@@ -18,23 +18,36 @@ type Event struct {
 	Description string
 	StartTime   string
 	EndTime     string
+	IsRecurring bool
 }
 
-func (e1 *Event) overlapsWith(e2 *Event) bool {
-	e1EndTime, err := time.Parse(time.RFC3339, e1.EndTime)
-	if err != nil {
-		log.Printf("Error parsing time: %s\n", err)
-	}
+func (e *Event) updateStartTimeForRecurringEvent() {
+	now := time.Now()
 
-	e2StartTime, _ := time.Parse(time.RFC3339, e2.StartTime)
-	if err != nil {
-		log.Printf("Error parsing time: %s\n", err)
-	}
+	startTime, _ := time.Parse(time.RFC3339, e.StartTime)
+	updatedStartTime := time.Date(
+		now.Year(), now.Month(), now.Day(),
+		startTime.Hour(), startTime.Minute(), startTime.Second(), startTime.Nanosecond(), startTime.Location(),
+	)
+	e.StartTime = updatedStartTime.Format(time.RFC3339)
+	// I am not doing the same thing for end times because
+	// 1) They don't matter in sorting or in any of my logic
+	// 2) I need to decide what to do if end time spans over midnight and goes on to the next day.
+}
 
-	if e1EndTime.Compare(e2StartTime) == -1 {
-		return false
-	}
-	return true
+func (e1 *Event) partiallyOverlapsWith(e2 *Event) bool {
+	e1EndTime, _ := parseTime(e1.EndTime)
+	e2StartTime, _ := parseTime(e2.StartTime)
+	e2EndTime, _ := parseTime(e2.EndTime)
+
+	return (e1EndTime.Equal(e2StartTime) || e1EndTime.After(e2StartTime)) && e1EndTime.Before(e2EndTime)
+}
+
+func (e1 *Event) completelyOverlapsWith(e2 *Event) bool {
+	e1EndTime, _ := parseTime(e1.EndTime)
+	e2EndTime, _ := parseTime(e2.EndTime)
+
+	return e1EndTime.Equal(e2EndTime) || e1EndTime.After(e2EndTime)
 }
 
 type Notifier struct {
@@ -78,11 +91,7 @@ func (n *Notifier) syncCalendar() error {
 		return err
 	}
 
-	// TODO: Double check if this is the right way to empty a slice.
-	if len(n.Events) > 0 {
-		n.Events = nil
-	}
-
+	n.Events = nil
 	for _, ei := range events.Items {
 		// TODO: read the documentation for the statuses
 		if ei.Status == "cancelled" {
@@ -93,8 +102,15 @@ func (n *Notifier) syncCalendar() error {
 			Description: ei.Description,
 			StartTime:   ei.Start.DateTime,
 			EndTime:     ei.End.DateTime,
+			IsRecurring: ei.Recurrence != nil,
 		}
 		n.Events = append(n.Events, e)
+	}
+
+	for _, e := range n.Events {
+		if e.IsRecurring {
+			e.updateStartTimeForRecurringEvent()
+		}
 	}
 
 	slices.SortFunc(n.Events, func(e1, e2 *Event) int {
@@ -103,10 +119,7 @@ func (n *Notifier) syncCalendar() error {
 		return a.Compare(b)
 	})
 
-	if len(n.MergedEvents) > 0 {
-		n.MergedEvents = nil
-	}
-
+	n.MergedEvents = nil
 	for _, currEvent := range n.Events {
 		if len(n.MergedEvents) == 0 {
 			n.MergedEvents = append(n.MergedEvents, currEvent)
@@ -116,7 +129,7 @@ func (n *Notifier) syncCalendar() error {
 		totalMergedEvents := len(n.MergedEvents)
 		lastMergedEvent := n.MergedEvents[totalMergedEvents-1]
 
-		if lastMergedEvent.overlapsWith(currEvent) {
+		if lastMergedEvent.partiallyOverlapsWith(currEvent) {
 			e := &Event{
 				Summary:     fmt.Sprintf("%s:%s", lastMergedEvent.Summary, currEvent.Summary),
 				Description: fmt.Sprintf("%s:%s", lastMergedEvent.Description, currEvent.Description),
@@ -124,9 +137,16 @@ func (n *Notifier) syncCalendar() error {
 				EndTime:     currEvent.EndTime,
 			}
 			n.MergedEvents[totalMergedEvents-1] = e
+		} else if lastMergedEvent.completelyOverlapsWith(currEvent) {
+
 		} else {
 			n.MergedEvents = append(n.MergedEvents, currEvent)
 		}
+	}
+
+	log.Println("events in calendar")
+	for _, me := range n.MergedEvents {
+		log.Println(me.Summary)
 	}
 
 	n.setUpcomingEvent()
@@ -143,6 +163,19 @@ func (n *Notifier) setUpcomingEvent() {
 		currentTime := time.Now()
 		mergedEventStartTime, _ := time.Parse(time.RFC3339, mergedEvent.StartTime)
 		upcomingEventStartTime, _ := time.Parse(time.RFC3339, n.UpcomingEvent.StartTime)
+
+		log.Printf("\ncurrent time: %s\nmerged event start time: %s\nupcoming event start time: %s\n",
+			currentTime.Format(time.TimeOnly),
+			mergedEventStartTime.Format(time.TimeOnly),
+			upcomingEventStartTime.Format(time.TimeOnly),
+		)
+
+		log.Println(currentTime.Before(mergedEventStartTime))
+		log.Println(mergedEventStartTime.Before(upcomingEventStartTime))
+
+		log.Println(mergedEventStartTime)
+		log.Println(upcomingEventStartTime)
+
 		if currentTime.Before(mergedEventStartTime) && mergedEventStartTime.Before(upcomingEventStartTime) {
 			// now ---> mergedEvent ---> upcomingEvent
 			// if the mergedEvent falls between `now` and `upcomingEvent`, then set upcomingEvent = mergedEvent
@@ -152,10 +185,33 @@ func (n *Notifier) setUpcomingEvent() {
 	log.Printf("Upcoming event is: %q, starts at: %q\n", n.UpcomingEvent.Summary, n.UpcomingEvent.StartTime)
 }
 
+func (n *Notifier) fetchUpcomingEventStartTime() string {
+	if n.UpcomingEvent.IsRecurring {
+
+	}
+
+	return n.UpcomingEvent.StartTime
+}
+
+func (n *Notifier) fetchUpcomingEventEndTime() string {
+	if n.UpcomingEvent.IsRecurring {
+
+	}
+
+	return n.UpcomingEvent.EndTime
+}
+
+// TODO: Yet to test this part after recurring event bit is sorted
 func (n *Notifier) upcomingEventStarted() bool {
 	now := time.Now()
-	st, _ := time.Parse(time.RFC3339, n.UpcomingEvent.StartTime)
-	et, _ := time.Parse(time.RFC3339, n.UpcomingEvent.EndTime)
+	st, _ := time.Parse(time.RFC3339, n.fetchUpcomingEventStartTime())
+	et, _ := time.Parse(time.RFC3339, n.fetchUpcomingEventEndTime())
+
+	log.Println("checking if upcoming event has started")
+	log.Printf("start time: %s", st.Format(time.DateTime))
+	log.Printf("end time: %s", et.Format(time.DateTime))
+	log.Printf("now time: %s", now.Format(time.DateTime))
+
 	if now.After(st) && now.Before(et) {
 		return true
 	}
@@ -164,7 +220,12 @@ func (n *Notifier) upcomingEventStarted() bool {
 
 func (n *Notifier) upcomingEventEnded() bool {
 	now := time.Now()
-	et, _ := time.Parse(time.RFC3339, n.UpcomingEvent.EndTime)
+	et, _ := time.Parse(time.RFC3339, n.fetchUpcomingEventEndTime())
+
+	log.Println("checking if upcoming event has ended")
+	log.Printf("end time: %s", et.Format(time.DateTime))
+	log.Printf("now time: %s", now.Format(time.DateTime))
+
 	if now.After(et) {
 		return true
 	}
