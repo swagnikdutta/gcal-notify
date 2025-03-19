@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"slices"
@@ -18,23 +16,57 @@ type Event struct {
 	Description string
 	StartTime   string
 	EndTime     string
+	IsRecurring bool
 }
 
-func (e1 *Event) overlapsWith(e2 *Event) bool {
-	e1EndTime, err := time.Parse(time.RFC3339, e1.EndTime)
-	if err != nil {
-		log.Printf("Error parsing time: %s\n", err)
-	}
+func (e *Event) updateStartTimeForRecurringEvent() {
+	now := time.Now()
 
-	e2StartTime, _ := time.Parse(time.RFC3339, e2.StartTime)
-	if err != nil {
-		log.Printf("Error parsing time: %s\n", err)
-	}
+	startTime, _ := time.Parse(time.RFC3339, e.StartTime)
+	updatedStartTime := time.Date(
+		now.Year(), now.Month(), now.Day(),
+		startTime.Hour(), startTime.Minute(), startTime.Second(), startTime.Nanosecond(), startTime.Location(),
+	)
+	e.StartTime = updatedStartTime.Format(time.RFC3339)
+	// I am not doing the same thing for end times because
+	// 1) They don't matter in sorting or in any of my logic
+	// 2) I need to decide what to do if end time spans over midnight and goes on to the next day.
+}
 
-	if e1EndTime.Compare(e2StartTime) == -1 {
-		return false
+func (e1 *Event) partiallyOverlapsWith(e2 *Event) bool {
+	e1EndTime, _ := parseTime(e1.EndTime)
+	e2StartTime, _ := parseTime(e2.StartTime)
+	e2EndTime, _ := parseTime(e2.EndTime)
+
+	return (e1EndTime.Equal(e2StartTime) || e1EndTime.After(e2StartTime)) && e1EndTime.Before(e2EndTime)
+}
+
+func (e1 *Event) completelyOverlapsWith(e2 *Event) bool {
+	e1EndTime, _ := parseTime(e1.EndTime)
+	e2EndTime, _ := parseTime(e2.EndTime)
+
+	return e1EndTime.Equal(e2EndTime) || e1EndTime.After(e2EndTime)
+}
+
+func (e *Event) inProgress() bool {
+	now := time.Now()
+	startTime, _ := time.Parse(time.RFC3339, e.StartTime)
+	endTime, _ := time.Parse(time.RFC3339, e.EndTime)
+
+	if (now.Equal(startTime) || now.After(startTime)) && (now.Equal(endTime) || now.Before(endTime)) {
+		return true
 	}
-	return true
+	return false
+}
+
+func (e *Event) hasEnded() bool {
+	now := time.Now()
+	endTime, _ := time.Parse(time.RFC3339, e.EndTime)
+
+	if now.After(endTime) {
+		return true
+	}
+	return false
 }
 
 type Notifier struct {
@@ -46,7 +78,6 @@ type Notifier struct {
 	EventNotificationChannel *calendar.Channel
 	Wg                       *sync.WaitGroup
 	t                        *time.Ticker
-	hourTicker               *time.Ticker
 	done                     chan struct{}
 	currentDay               int
 }
@@ -60,10 +91,91 @@ func NewNotifier() *Notifier {
 		UpcomingEvent:            nil,
 		EventNotificationChannel: nil,
 		Wg:                       &sync.WaitGroup{},
-		t:                        time.NewTicker(1 * time.Minute),
-		hourTicker:               time.NewTicker(1 * time.Hour),
+		t:                        time.NewTicker(10 * time.Second),
 		done:                     make(chan struct{}),
 		currentDay:               time.Now().Day(),
+	}
+}
+
+func (n *Notifier) populateEvents(events *calendar.Events) {
+	n.Events = nil
+	for _, ei := range events.Items {
+		// TODO: read the documentation for the statuses
+		if ei.Status == "cancelled" {
+			continue
+		}
+		e := &Event{
+			Summary:     ei.Summary,
+			Description: ei.Description,
+			StartTime:   ei.Start.DateTime,
+			EndTime:     ei.End.DateTime,
+			IsRecurring: ei.Recurrence != nil,
+		}
+		n.Events = append(n.Events, e)
+	}
+
+	fmt.Printf("\nlist of events in calendar(sorted by start time) - %d\n", len(n.Events))
+	for idx, e := range n.Events {
+		fmt.Printf("%d) %s\n", idx+1, e.Summary)
+	}
+	for _, e := range n.Events {
+		if e.IsRecurring {
+			e.updateStartTimeForRecurringEvent()
+		}
+	}
+}
+
+func (n *Notifier) mergeOverlappingEvents() {
+	slices.SortFunc(n.Events, func(e1, e2 *Event) int {
+		a, _ := time.Parse(time.RFC3339, e1.StartTime)
+		b, _ := time.Parse(time.RFC3339, e2.StartTime)
+		return a.Compare(b)
+	})
+
+	n.MergedEvents = nil
+	for _, currEvent := range n.Events {
+		if len(n.MergedEvents) == 0 {
+			n.MergedEvents = append(n.MergedEvents, currEvent)
+			continue
+		}
+
+		lastMergedEvent := n.MergedEvents[len(n.MergedEvents)-1]
+		if lastMergedEvent.partiallyOverlapsWith(currEvent) {
+			e := &Event{
+				Summary:     fmt.Sprintf("%s:%s", lastMergedEvent.Summary, currEvent.Summary),
+				Description: fmt.Sprintf("%s:%s", lastMergedEvent.Description, currEvent.Description),
+				StartTime:   lastMergedEvent.StartTime,
+				EndTime:     currEvent.EndTime,
+			}
+			n.MergedEvents[len(n.MergedEvents)-1] = e
+		} else if lastMergedEvent.completelyOverlapsWith(currEvent) {
+			// nothing to do here, because we don't push a completely engulfed event into merged events list
+			continue
+		} else {
+			n.MergedEvents = append(n.MergedEvents, currEvent)
+		}
+	}
+
+	fmt.Printf("\nlist of merged events in calendar(sorted by start time) - %d\n", len(n.MergedEvents))
+	for idx, e := range n.MergedEvents {
+		fmt.Printf("%d) %s\n", idx+1, e.Summary)
+	}
+	fmt.Println()
+}
+
+func (n *Notifier) setUpcomingEvent() {
+	n.UpcomingEvent = nil // set this to null once the most recent event ends
+
+	for _, mergedEvent := range n.MergedEvents {
+		mergedEventStartTime, _ := time.Parse(time.RFC3339, mergedEvent.StartTime)
+		if time.Now().Before(mergedEventStartTime) {
+			n.UpcomingEvent = mergedEvent
+			break
+		}
+	}
+
+	if n.UpcomingEvent != nil {
+		log.Printf("Upcoming event is: %q\n", n.UpcomingEvent.Summary)
 	}
 }
 
@@ -78,101 +190,17 @@ func (n *Notifier) syncCalendar() error {
 		return err
 	}
 
-	// TODO: Double check if this is the right way to empty a slice.
-	if len(n.Events) > 0 {
-		n.Events = nil
-	}
-
-	for _, ei := range events.Items {
-		// TODO: read the documentation for the statuses
-		if ei.Status == "cancelled" {
-			continue
-		}
-		e := &Event{
-			Summary:     ei.Summary,
-			Description: ei.Description,
-			StartTime:   ei.Start.DateTime,
-			EndTime:     ei.End.DateTime,
-		}
-		n.Events = append(n.Events, e)
-	}
-
-	slices.SortFunc(n.Events, func(e1, e2 *Event) int {
-		a, _ := time.Parse(time.RFC3339, e1.StartTime)
-		b, _ := time.Parse(time.RFC3339, e2.StartTime)
-		return a.Compare(b)
-	})
-
-	if len(n.MergedEvents) > 0 {
-		n.MergedEvents = nil
-	}
-
-	for _, currEvent := range n.Events {
-		if len(n.MergedEvents) == 0 {
-			n.MergedEvents = append(n.MergedEvents, currEvent)
-			continue
-		}
-
-		totalMergedEvents := len(n.MergedEvents)
-		lastMergedEvent := n.MergedEvents[totalMergedEvents-1]
-
-		if lastMergedEvent.overlapsWith(currEvent) {
-			e := &Event{
-				Summary:     fmt.Sprintf("%s:%s", lastMergedEvent.Summary, currEvent.Summary),
-				Description: fmt.Sprintf("%s:%s", lastMergedEvent.Description, currEvent.Description),
-				StartTime:   lastMergedEvent.StartTime,
-				EndTime:     currEvent.EndTime,
-			}
-			n.MergedEvents[totalMergedEvents-1] = e
-		} else {
-			n.MergedEvents = append(n.MergedEvents, currEvent)
-		}
-	}
-
+	n.populateEvents(events)
+	n.mergeOverlappingEvents()
 	n.setUpcomingEvent()
 	return nil
 }
 
-func (n *Notifier) setUpcomingEvent() {
-	n.UpcomingEvent = nil // set this to null once the most recent event ends
-	for _, mergedEvent := range n.MergedEvents {
-		if n.UpcomingEvent == nil {
-			n.UpcomingEvent = mergedEvent
-			continue
-		}
-		currentTime := time.Now()
-		mergedEventStartTime, _ := time.Parse(time.RFC3339, mergedEvent.StartTime)
-		upcomingEventStartTime, _ := time.Parse(time.RFC3339, n.UpcomingEvent.StartTime)
-		if currentTime.Before(mergedEventStartTime) && mergedEventStartTime.Before(upcomingEventStartTime) {
-			// now ---> mergedEvent ---> upcomingEvent
-			// if the mergedEvent falls between `now` and `upcomingEvent`, then set upcomingEvent = mergedEvent
-			n.UpcomingEvent = mergedEvent
-		}
-	}
-	log.Printf("Upcoming event is: %q, starts at: %q\n", n.UpcomingEvent.Summary, n.UpcomingEvent.StartTime)
-}
-
-func (n *Notifier) upcomingEventStarted() bool {
-	now := time.Now()
-	st, _ := time.Parse(time.RFC3339, n.UpcomingEvent.StartTime)
-	et, _ := time.Parse(time.RFC3339, n.UpcomingEvent.EndTime)
-	if now.After(st) && now.Before(et) {
-		return true
-	}
-	return false
-}
-
-func (n *Notifier) upcomingEventEnded() bool {
-	now := time.Now()
-	et, _ := time.Parse(time.RFC3339, n.UpcomingEvent.EndTime)
-	if now.After(et) {
-		return true
-	}
-	return false
-}
-
+// watch is a blocking method that continuously monitors the current calendar state.
+// It checks for calendar updates at midnight and tracks the status of the upcoming event,
+// triggering actions when an event starts or ends. The method runs in an infinite loop
+// and can be stopped by sending a signal to the done channel.
 func (n *Notifier) watch() {
-	defer n.Wg.Done()
 	for {
 		select {
 		case <-n.done:
@@ -180,7 +208,6 @@ func (n *Notifier) watch() {
 			return
 
 		case <-n.t.C:
-
 			// this takes care of refreshing the calendar post midnight
 			if n.currentDay != time.Now().Day() {
 				log.Println("syncing calendar post midnight")
@@ -189,27 +216,18 @@ func (n *Notifier) watch() {
 				if err != nil {
 					log.Println("error syncing calendar")
 				}
-				n.UpcomingEvent = nil
 			}
 
 			if n.UpcomingEvent == nil {
-				continue
+				break
 			}
 
-			if n.upcomingEventStarted() {
-				log.Printf("Event %q in progress", n.UpcomingEvent.Summary)
-				// This is where you notify subscribers - if there are any - that the next event has begun
-				// and the light bulb must be on
-				if n.bulbState == bulbStateOff {
-					n.bulbState = bulbStateOn
-				}
-			}
-
-			if n.upcomingEventEnded() {
-				log.Printf("Event %q has ended", n.UpcomingEvent.Summary)
-				// This is where you notify subscribers - if there are any - that the next event has ended
-				// and the light bulb must be off
-				n.bulbState = bulbStateOff
+			if n.UpcomingEvent.inProgress() {
+				// light it up
+				fmt.Println("light it up")
+			} else if n.UpcomingEvent.hasEnded() {
+				// lights off
+				fmt.Println("lights off")
 				n.setUpcomingEvent()
 			}
 		}
@@ -224,15 +242,15 @@ func (n *Notifier) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// TODO: check if any of the following is needed?
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err != nil {
-		log.Println("Error reading request body")
-		return
-	}
-	// r.Body.Close()
-	r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-	bodyString := string(bodyBytes)
-	log.Printf("bodyString: %s", bodyString)
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("200 OK"))
+	// bodyBytes, err := io.ReadAll(r.Body)
+	// if err != nil {
+	// 	log.Println("Error reading request body")
+	// 	return
+	// }
+	// // r.Body.Close()
+	// r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+	// bodyString := string(bodyBytes)
+	// log.Printf("bodyString: %s", bodyString)
+	// w.WriteHeader(http.StatusOK)
+	// w.Write([]byte("200 OK"))
 }

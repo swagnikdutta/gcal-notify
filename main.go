@@ -61,7 +61,7 @@ func startHTTPServer(server *http.Server, notifier *Notifier) {
 				if chanStopErr != nil {
 					log.Printf("error stopping notification channel: %v", chanStopErr)
 				}
-
+				log.Println("notification channel stopped successfully")
 				log.Println("shutting down server gracefully")
 				notifier.done <- struct{}{}
 				return
@@ -86,7 +86,7 @@ func startWatchingEvents(notifier *Notifier) {
 	go func() {
 		defer notifier.Wg.Done()
 		ch, err := notifier.Service.Events.Watch(os.Getenv(calendarId), &calendar.Channel{
-			Id:      "test-channel-9",
+			Id:      "test-channel-11",
 			Address: fmt.Sprintf("%s/api/v1/events/notify", os.Getenv(notificationChannelEndpoint)),
 			Type:    channelTypeWebhook,
 		}).Do()
