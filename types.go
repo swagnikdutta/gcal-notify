@@ -116,10 +116,10 @@ func (n *Notifier) populateEvents(events *calendar.Events) {
 		n.Events = append(n.Events, e)
 	}
 
-	fmt.Printf("\nlist of events in calendar(sorted by start time) - %d\n", len(n.Events))
-	for idx, e := range n.Events {
-		fmt.Printf("%d) %s\n", idx+1, e.Summary)
-	}
+	// fmt.Printf("\nlist of events in calendar(sorted by start time) - %d\n", len(n.Events))
+	// for idx, e := range n.Events {
+	// 	fmt.Printf("%d) %s\n", idx+1, e.Summary)
+	// }
 	for _, e := range n.Events {
 		if e.IsRecurring {
 			e.updateStartTimeForRecurringEvent()
@@ -158,11 +158,11 @@ func (n *Notifier) mergeOverlappingEvents() {
 		}
 	}
 
-	fmt.Printf("\nlist of merged events in calendar(sorted by start time) - %d\n", len(n.MergedEvents))
-	for idx, e := range n.MergedEvents {
-		fmt.Printf("%d) %s\n", idx+1, e.Summary)
-	}
-	fmt.Println()
+	// fmt.Printf("\nlist of merged events in calendar(sorted by start time) - %d\n", len(n.MergedEvents))
+	// for idx, e := range n.MergedEvents {
+	// 	fmt.Printf("%d) %s\n", idx+1, e.Summary)
+	// }
+	// fmt.Println()
 }
 
 func (n *Notifier) setUpcomingEvent() {

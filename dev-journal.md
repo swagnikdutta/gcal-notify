@@ -1,11 +1,11 @@
 ### Todos
 - add auth check in webhook route
-  - check channel id value - [DONE]
-- inspect request body, if we need to write back any response - sending back status code is enough [DONE]
+  - [DONE] check channel id value
+- [DONE] inspect request body, if we need to write back any response - sending back status code is enough.
 - change channel id
 - auto-renew notification channel, post expiry.
   - currently there is no way to "renew" a channel, you would have to create a new one with a new id (unique value)
-- you need to return a success status code else google will retry with exponential back off. [DONE]
+- [DONE] you need to return a success status code else google will retry with exponential back off
 
 
 ### Thoughts

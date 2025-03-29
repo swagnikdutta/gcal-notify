@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	"google.golang.org/api/calendar/v3"
 )
@@ -86,7 +87,7 @@ func startWatchingEvents(notifier *Notifier) {
 	go func() {
 		defer notifier.Wg.Done()
 		ch, err := notifier.Service.Events.Watch(os.Getenv(calendarId), &calendar.Channel{
-			Id:      "test-channel-11",
+			Id:      uuid.New().String(),
 			Address: fmt.Sprintf("%s/api/v1/events/notify", os.Getenv(notificationChannelEndpoint)),
 			Type:    channelTypeWebhook,
 		}).Do()
