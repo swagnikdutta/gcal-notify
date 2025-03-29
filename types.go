@@ -72,31 +72,20 @@ func (e *Event) hasEnded() bool {
 }
 
 type Notifier struct {
-	bulbState                string
 	Service                  *calendar.Service
 	Events                   []*Event
 	UpcomingEvent            *Event
 	MergedEvents             []*Event
 	EventNotificationChannel *calendar.Channel
 	Wg                       *sync.WaitGroup
+	observers                []EventObserver
 	t                        *time.Ticker
 	done                     chan struct{}
 	currentDay               int
 }
 
-func NewNotifier() *Notifier {
-	return &Notifier{
-		bulbState:                bulbStateOff,
-		Service:                  authenticate(),
-		Events:                   make([]*Event, 0),
-		MergedEvents:             make([]*Event, 0),
-		UpcomingEvent:            nil,
-		EventNotificationChannel: nil,
-		Wg:                       &sync.WaitGroup{},
-		t:                        time.NewTicker(10 * time.Second),
-		done:                     make(chan struct{}),
-		currentDay:               time.Now().Day(),
-	}
+func (n *Notifier) registerObserver(o EventObserver) {
+	n.observers = append(n.observers, o)
 }
 
 func (n *Notifier) populateEvents(events *calendar.Events) {
@@ -216,7 +205,8 @@ func (n *Notifier) watch() {
 				n.currentDay = time.Now().Day()
 				err := n.syncCalendar()
 				if err != nil {
-					log.Println("error syncing calendar")
+					log.Println("error syncing calendar post midnight")
+					break
 				}
 			}
 
@@ -225,11 +215,15 @@ func (n *Notifier) watch() {
 			}
 
 			if n.UpcomingEvent.inProgress() {
-				// light it up
-				fmt.Println("light it up")
+				log.Printf("Event %q started. Notifying subscribers...", n.UpcomingEvent.Summary)
+				for _, o := range n.observers {
+					o.OnEventStart()
+				}
 			} else if n.UpcomingEvent.hasEnded() {
-				// lights off
-				fmt.Println("lights off")
+				log.Printf("Event %q ended. Notifying subscribers...", n.UpcomingEvent.Summary)
+				for _, o := range n.observers {
+					o.OnEventEnd()
+				}
 				n.setUpcomingEvent()
 			}
 		}
@@ -249,4 +243,32 @@ func (n *Notifier) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Println("error syncing calendar")
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+func NewNotifier() *Notifier {
+	return &Notifier{
+		Service:                  authenticate(),
+		Events:                   make([]*Event, 0),
+		MergedEvents:             make([]*Event, 0),
+		UpcomingEvent:            nil,
+		EventNotificationChannel: nil,
+		Wg:                       &sync.WaitGroup{},
+		t:                        time.NewTicker(10 * time.Second),
+		done:                     make(chan struct{}),
+		currentDay:               time.Now().Day(),
+	}
+}
+
+type PhilipsHue struct{}
+
+func (p *PhilipsHue) OnEventStart() {
+	fmt.Println("this light is lighting")
+}
+
+func (p *PhilipsHue) OnEventEnd() {
+	fmt.Println("this light is turning off")
+}
+
+func NewPhilipsHue() *PhilipsHue {
+	return new(PhilipsHue)
 }

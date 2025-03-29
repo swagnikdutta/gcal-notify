@@ -19,8 +19,6 @@ const (
 	channelTypeWebhook          = "web_hook"
 	notificationChannelEndpoint = "NOTIFICATION_CHANNEL_ENDPOINT"
 	calendarId                  = "CALENDAR_ID"
-	bulbStateOff                = "off"
-	bulbStateOn                 = "on"
 )
 
 func NewRequestMultiplexer(h http.HandlerFunc) http.Handler {
@@ -79,7 +77,6 @@ func waitForShutdown(server *http.Server, notifier *Notifier, stopCh chan os.Sig
 		<-stopCh
 		_ = server.Shutdown(context.Background())
 	}()
-	notifier.Wg.Wait() // blocks
 }
 
 func startWatchingEvents(notifier *Notifier) {
@@ -117,4 +114,10 @@ func main() {
 
 	startWatchingEvents(notifier)
 	waitForShutdown(httpServer, notifier, stopCh)
+
+	// subscriber part begins
+	hue := NewPhilipsHue()
+	notifier.registerObserver(hue)
+
+	notifier.Wg.Wait() // blocks
 }
