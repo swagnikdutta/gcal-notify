@@ -11,6 +11,8 @@ import (
 	"google.golang.org/api/calendar/v3"
 )
 
+const googHeaderChannelId = "X-Goog-Channel-Id"
+
 type Event struct {
 	Summary     string
 	Description string
@@ -234,23 +236,17 @@ func (n *Notifier) watch() {
 	}
 }
 
-// The controller
 func (n *Notifier) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if n.EventNotificationChannel.Id != r.Header.Get(googHeaderChannelId) {
+		log.Printf("%s Forbidden operation. Channel id do not match or is missing from headers", http.StatusForbidden)
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("403. Forbidden"))
+		return
+	}
+
 	err := n.syncCalendar()
 	if err != nil {
 		log.Println("error syncing calendar")
 	}
-
-	// TODO: check if any of the following is needed?
-	// bodyBytes, err := io.ReadAll(r.Body)
-	// if err != nil {
-	// 	log.Println("Error reading request body")
-	// 	return
-	// }
-	// // r.Body.Close()
-	// r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-	// bodyString := string(bodyBytes)
-	// log.Printf("bodyString: %s", bodyString)
-	// w.WriteHeader(http.StatusOK)
-	// w.Write([]byte("200 OK"))
+	w.WriteHeader(http.StatusOK)
 }

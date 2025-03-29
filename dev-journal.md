@@ -1,7 +1,16 @@
 ### Todos
-- Understand why channel is working?
-- Add authorisation check to your webhook endpoint
-- Should I look into the request body? In the webhook? If there's nothing to look for, clean that code.
+- add auth check in webhook route
+  - check channel id value - [DONE]
+- inspect request body, if we need to write back any response - sending back status code is enough [DONE]
+- change channel id
+- auto-renew notification channel, post expiry.
+  - currently there is no way to "renew" a channel, you would have to create a new one with a new id (unique value)
+- you need to return a success status code else google will retry with exponential back off. [DONE]
+
+
+### Thoughts
+
+the notification message is supposed to describe the change in the resource.
 
 ### since i keep on forgetting
 
