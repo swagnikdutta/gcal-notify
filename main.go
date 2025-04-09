@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 
 	"github.com/google/uuid"
@@ -97,12 +98,36 @@ func startWatchingEvents(notifier *Notifier) {
 	}()
 }
 
+func assertUserCalendarExistsInSvcAccount(notifier *Notifier) {
+	calendarList, err := notifier.Service.CalendarList.List().Do()
+	if err != nil {
+		log.Fatalf("Error fetching calendar list: %s\n", err)
+	}
+
+	// ensure calendar with our calendar id exists
+	idx := slices.IndexFunc(calendarList.Items, func(entry *calendar.CalendarListEntry) bool {
+		return entry.Id == notifier.calendarId
+	})
+	if idx < 0 {
+		entry := &calendar.CalendarListEntry{
+			Id: notifier.calendarId,
+		}
+		entry, err := notifier.Service.CalendarList.Insert(entry).Do()
+		if err != nil {
+			log.Fatalf("Error inserting user's calendar to service account's calendar: %s\n", err)
+		}
+	}
+}
+
 func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Fatal("Error loading .env file")
 	}
 
 	notifier := NewNotifier()
+	// ensure user's calendar exists in service account's calendar.
+	assertUserCalendarExistsInSvcAccount(notifier)
+
 	err := notifier.syncCalendar()
 	if err != nil {
 		log.Fatalf("Error syncing calendar: %s", err)

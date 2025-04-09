@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"slices"
 	"sync"
 	"time"
@@ -72,6 +73,7 @@ func (e *Event) hasEnded() bool {
 }
 
 type Notifier struct {
+	calendarId               string
 	Service                  *calendar.Service
 	Events                   []*Event
 	UpcomingEvent            *Event
@@ -105,10 +107,6 @@ func (n *Notifier) populateEvents(events *calendar.Events) {
 		n.Events = append(n.Events, e)
 	}
 
-	// fmt.Printf("\nlist of events in calendar(sorted by start time) - %d\n", len(n.Events))
-	// for idx, e := range n.Events {
-	// 	fmt.Printf("%d) %s\n", idx+1, e.Summary)
-	// }
 	for _, e := range n.Events {
 		if e.IsRecurring {
 			e.updateStartTimeForRecurringEvent()
@@ -122,6 +120,11 @@ func (n *Notifier) mergeOverlappingEvents() {
 		b, _ := time.Parse(time.RFC3339, e2.StartTime)
 		return a.Compare(b)
 	})
+
+	fmt.Printf("\nlist of events in calendar(sorted by start time) - %d\n", len(n.Events))
+	for idx, e := range n.Events {
+		fmt.Printf("%d) %s\n", idx+1, e.Summary)
+	}
 
 	n.MergedEvents = nil
 	for _, currEvent := range n.Events {
@@ -147,11 +150,11 @@ func (n *Notifier) mergeOverlappingEvents() {
 		}
 	}
 
-	// fmt.Printf("\nlist of merged events in calendar(sorted by start time) - %d\n", len(n.MergedEvents))
-	// for idx, e := range n.MergedEvents {
-	// 	fmt.Printf("%d) %s\n", idx+1, e.Summary)
-	// }
-	// fmt.Println()
+	fmt.Printf("\nlist of merged events in calendar(sorted by start time) - %d\n", len(n.MergedEvents))
+	for idx, e := range n.MergedEvents {
+		fmt.Printf("%d) %s\n", idx+1, e.Summary)
+	}
+	fmt.Println()
 }
 
 func (n *Notifier) setUpcomingEvent() {
@@ -175,7 +178,7 @@ func (n *Notifier) syncCalendar() error {
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local).Format(time.RFC3339)
 	endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, time.Local).Format(time.RFC3339)
 
-	events, err := n.Service.Events.List("primary").TimeMin(startOfDay).TimeMax(endOfDay).Do()
+	events, err := n.Service.Events.List(n.calendarId).TimeMin(startOfDay).TimeMax(endOfDay).Do()
 	if err != nil {
 		log.Printf("Error updating events. Error: %s\n", err.Error())
 		return err
@@ -247,6 +250,7 @@ func (n *Notifier) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func NewNotifier() *Notifier {
 	return &Notifier{
+		calendarId:               os.Getenv(calendarId),
 		Service:                  authenticate(),
 		Events:                   make([]*Event, 0),
 		MergedEvents:             make([]*Event, 0),
