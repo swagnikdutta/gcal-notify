@@ -22,9 +22,10 @@ const (
 	calendarId                  = "CALENDAR_ID"
 )
 
-func NewRequestMultiplexer(h http.HandlerFunc) http.Handler {
+func NewRequestMultiplexer(notifier *Notifier) http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/events/notify", h)
+	mux.HandleFunc("/notify", notifier.handleCalendarUpdates)
+	mux.HandleFunc("/healthcheck", notifier.healthCheck)
 
 	var handler http.Handler = mux
 	// add middlewares if needed
@@ -42,9 +43,8 @@ func setupSignalHandler() chan os.Signal {
 
 func createHTTPServer(notifier *Notifier) *http.Server {
 	return &http.Server{
-		// TODO: replace with actual endpoint
-		Addr:    "localhost:8080",
-		Handler: NewRequestMultiplexer(notifier.ServeHTTP),
+		Addr:    ":8080",
+		Handler: NewRequestMultiplexer(notifier),
 	}
 }
 
@@ -86,7 +86,7 @@ func startWatchingEvents(notifier *Notifier) {
 		defer notifier.Wg.Done()
 		ch, err := notifier.Service.Events.Watch(os.Getenv(calendarId), &calendar.Channel{
 			Id:      uuid.New().String(),
-			Address: fmt.Sprintf("%s/api/v1/events/notify", os.Getenv(notificationChannelEndpoint)),
+			Address: fmt.Sprintf("%s/notify", os.Getenv(notificationChannelEndpoint)),
 			Type:    channelTypeWebhook,
 		}).Do()
 		if err != nil {

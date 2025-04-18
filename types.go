@@ -233,7 +233,7 @@ func (n *Notifier) watch() {
 	}
 }
 
-func (n *Notifier) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (n *Notifier) handleCalendarUpdates(w http.ResponseWriter, r *http.Request) {
 	if n.EventNotificationChannel.Id != r.Header.Get(googHeaderChannelId) {
 		log.Printf("%s Forbidden operation. Channel id do not match or is missing from headers", http.StatusForbidden)
 		w.WriteHeader(http.StatusForbidden)
@@ -246,6 +246,11 @@ func (n *Notifier) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Println("error syncing calendar")
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+func (n *Notifier) healthCheck(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
 }
 
 func NewNotifier() *Notifier {
