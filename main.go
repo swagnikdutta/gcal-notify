@@ -16,12 +16,6 @@ import (
 	"google.golang.org/api/calendar/v3"
 )
 
-const (
-	channelTypeWebhook          = "web_hook"
-	notificationChannelEndpoint = "NOTIFICATION_CHANNEL_ENDPOINT"
-	calendarId                  = "CALENDAR_ID"
-)
-
 func NewRequestMultiplexer(notifier *Notifier) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/notify", notifier.handleCalendarUpdates)
@@ -139,10 +133,6 @@ func main() {
 
 	startWatchingEvents(notifier)
 	waitForShutdown(httpServer, notifier, stopCh)
-
-	// subscriber part begins
-	hue := NewPhilipsHue()
-	notifier.registerObserver(hue)
 
 	notifier.Wg.Wait() // blocks
 }

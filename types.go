@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -12,7 +15,7 @@ import (
 	"google.golang.org/api/calendar/v3"
 )
 
-const googHeaderChannelId = "X-Goog-Channel-Id"
+type EventStatus string
 
 type Event struct {
 	Summary     string
@@ -80,14 +83,9 @@ type Notifier struct {
 	MergedEvents             []*Event
 	EventNotificationChannel *calendar.Channel
 	Wg                       *sync.WaitGroup
-	observers                []EventObserver
 	t                        *time.Ticker
 	done                     chan struct{}
 	currentDay               int
-}
-
-func (n *Notifier) registerObserver(o EventObserver) {
-	n.observers = append(n.observers, o)
 }
 
 func (n *Notifier) populateEvents(events *calendar.Events) {
@@ -219,14 +217,10 @@ func (n *Notifier) watch() {
 
 			if n.UpcomingEvent.inProgress() {
 				log.Printf("Event %q started. Notifying subscribers...", n.UpcomingEvent.Summary)
-				for _, o := range n.observers {
-					o.OnEventStart()
-				}
+				n.notifySubscribers(eventStarted)
 			} else if n.UpcomingEvent.hasEnded() {
 				log.Printf("Event %q ended. Notifying subscribers...", n.UpcomingEvent.Summary)
-				for _, o := range n.observers {
-					o.OnEventEnd()
-				}
+				n.notifySubscribers(eventEnded)
 				n.setUpcomingEvent()
 			}
 		}
@@ -253,6 +247,28 @@ func (n *Notifier) healthCheck(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
+func (n *Notifier) notifySubscribers(status EventStatus) {
+	requestUrl := fmt.Sprintf("%s/light/state", os.Getenv(hueAgentBaseUrl))
+	payloadBytes, _ := json.Marshal(map[string]interface{}{
+		"on": status == eventStarted,
+	})
+
+	req, err := http.NewRequest(http.MethodPost, requestUrl, bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		log.Printf("Error creating HTTP request: %s\n", err)
+	}
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		log.Printf("Error occurred while notifying subscribers: %s\n", err)
+	}
+	defer res.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(res.Body)
+	log.Printf("Successfully notified subscribers. Statuscode: %v\n", res.StatusCode)
+	log.Printf(string(bodyBytes))
+}
+
 func NewNotifier() *Notifier {
 	return &Notifier{
 		calendarId:               os.Getenv(calendarId),
@@ -266,18 +282,4 @@ func NewNotifier() *Notifier {
 		done:                     make(chan struct{}),
 		currentDay:               time.Now().Day(),
 	}
-}
-
-type PhilipsHue struct{}
-
-func (p *PhilipsHue) OnEventStart() {
-	fmt.Println("this light is lighting")
-}
-
-func (p *PhilipsHue) OnEventEnd() {
-	fmt.Println("this light is turning off")
-}
-
-func NewPhilipsHue() *PhilipsHue {
-	return new(PhilipsHue)
 }
