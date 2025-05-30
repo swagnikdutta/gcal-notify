@@ -5,6 +5,7 @@ const (
 	channelTypeWebhook  string      = "web_hook"
 	eventStarted        EventStatus = "event_started"
 	eventEnded          EventStatus = "event_ended"
+	watchInterval       int         = 3
 
 	// related to env file variables
 	notificationChannelEndpoint = "NOTIFICATION_CHANNEL_ENDPOINT"

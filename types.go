@@ -20,46 +20,38 @@ type EventStatus string
 type Event struct {
 	Summary     string
 	Description string
-	StartTime   string
-	EndTime     string
+	StartTime   time.Time
+	EndTime     time.Time
 	IsRecurring bool
 }
 
 func (e *Event) updateStartTimeForRecurringEvent() {
 	now := time.Now()
 
-	startTime, _ := time.Parse(time.RFC3339, e.StartTime)
-	updatedStartTime := time.Date(
+	// updatedStartTime := time.Date(
+	// 	now.Year(), now.Month(), now.Day(),
+	// 	e.StartTime.Hour(), e.StartTime.Minute(), e.StartTime.Second(), e.StartTime.Nanosecond(), e.StartTime.Location(),
+	// )
+	e.StartTime = time.Date(
 		now.Year(), now.Month(), now.Day(),
-		startTime.Hour(), startTime.Minute(), startTime.Second(), startTime.Nanosecond(), startTime.Location(),
+		e.StartTime.Hour(), e.StartTime.Minute(), e.StartTime.Second(), e.StartTime.Nanosecond(), e.StartTime.Location(),
 	)
-	e.StartTime = updatedStartTime.Format(time.RFC3339)
 	// I am not doing the same thing for end times because
 	// 1) They don't matter in sorting or in any of my logic
 	// 2) I need to decide what to do if end time spans over midnight and goes on to the next day.
 }
 
 func (e1 *Event) partiallyOverlapsWith(e2 *Event) bool {
-	e1EndTime, _ := parseTime(e1.EndTime)
-	e2StartTime, _ := parseTime(e2.StartTime)
-	e2EndTime, _ := parseTime(e2.EndTime)
-
-	return (e1EndTime.Equal(e2StartTime) || e1EndTime.After(e2StartTime)) && e1EndTime.Before(e2EndTime)
+	return (e1.EndTime.Equal(e2.StartTime) || e1.EndTime.After(e2.StartTime)) && e1.EndTime.Before(e2.EndTime)
 }
 
 func (e1 *Event) completelyOverlapsWith(e2 *Event) bool {
-	e1EndTime, _ := parseTime(e1.EndTime)
-	e2EndTime, _ := parseTime(e2.EndTime)
-
-	return e1EndTime.Equal(e2EndTime) || e1EndTime.After(e2EndTime)
+	return e1.EndTime.Equal(e2.EndTime) || e1.EndTime.After(e2.EndTime)
 }
 
 func (e *Event) inProgress() bool {
 	now := time.Now()
-	startTime, _ := time.Parse(time.RFC3339, e.StartTime)
-	endTime, _ := time.Parse(time.RFC3339, e.EndTime)
-
-	if (now.Equal(startTime) || now.After(startTime)) && (now.Equal(endTime) || now.Before(endTime)) {
+	if (now.Equal(e.StartTime) || now.After(e.StartTime)) && (now.Equal(e.EndTime) || now.Before(e.EndTime)) {
 		return true
 	}
 	return false
@@ -67,7 +59,7 @@ func (e *Event) inProgress() bool {
 
 func (e *Event) hasEnded() bool {
 	now := time.Now()
-	endTime, _ := time.Parse(time.RFC3339, e.EndTime)
+	endTime := e.EndTime
 
 	if now.After(endTime) {
 		return true
@@ -95,11 +87,14 @@ func (n *Notifier) populateEvents(events *calendar.Events) {
 		if ei.Status == "cancelled" {
 			continue
 		}
+
+		stp, _ := time.Parse(time.RFC3339, ei.Start.DateTime)
+		etp, _ := time.Parse(time.RFC3339, ei.End.DateTime)
 		e := &Event{
 			Summary:     ei.Summary,
 			Description: ei.Description,
-			StartTime:   ei.Start.DateTime,
-			EndTime:     ei.End.DateTime,
+			StartTime:   stp,
+			EndTime:     etp,
 			IsRecurring: ei.Recurrence != nil,
 		}
 		n.Events = append(n.Events, e)
@@ -114,9 +109,7 @@ func (n *Notifier) populateEvents(events *calendar.Events) {
 
 func (n *Notifier) mergeOverlappingEvents() {
 	slices.SortFunc(n.Events, func(e1, e2 *Event) int {
-		a, _ := time.Parse(time.RFC3339, e1.StartTime)
-		b, _ := time.Parse(time.RFC3339, e2.StartTime)
-		return a.Compare(b)
+		return e1.StartTime.Compare(e2.StartTime)
 	})
 
 	fmt.Printf("\nlist of events in calendar(sorted by start time) - %d\n", len(n.Events))
@@ -159,8 +152,7 @@ func (n *Notifier) setUpcomingEvent() {
 	n.UpcomingEvent = nil // set this to null once the most recent event ends
 
 	for _, mergedEvent := range n.MergedEvents {
-		mergedEventStartTime, _ := time.Parse(time.RFC3339, mergedEvent.StartTime)
-		if time.Now().Before(mergedEventStartTime) {
+		if time.Now().Before(mergedEvent.StartTime) {
 			n.UpcomingEvent = mergedEvent
 			break
 		}
@@ -216,11 +208,21 @@ func (n *Notifier) watch() {
 			}
 
 			if n.UpcomingEvent.inProgress() {
+				retries := 2
 				log.Printf("Event %q started. Notifying subscribers...", n.UpcomingEvent.Summary)
-				n.notifySubscribers(eventStarted)
+				startTime := n.UpcomingEvent.StartTime
+				delta := int(time.Now().Sub(startTime).Seconds())
+
+				fmt.Printf("delta: %d, 2*watchInterval: %d\n", delta, retries*watchInterval)
+
+				if int(delta) <= retries*watchInterval {
+					fmt.Println("Firing")
+					n.notifyHueAgent(eventStarted)
+				}
+
 			} else if n.UpcomingEvent.hasEnded() {
 				log.Printf("Event %q ended. Notifying subscribers...", n.UpcomingEvent.Summary)
-				n.notifySubscribers(eventEnded)
+				n.notifyHueAgent(eventEnded)
 				n.setUpcomingEvent()
 			}
 		}
@@ -247,7 +249,7 @@ func (n *Notifier) healthCheck(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
-func (n *Notifier) notifySubscribers(status EventStatus) {
+func (n *Notifier) notifyHueAgent(status EventStatus) {
 	requestUrl := fmt.Sprintf("%s/light/state", os.Getenv(hueAgentBaseUrl))
 	payloadBytes, _ := json.Marshal(map[string]interface{}{
 		"on": status == eventStarted,
@@ -278,7 +280,7 @@ func NewNotifier() *Notifier {
 		UpcomingEvent:            nil,
 		EventNotificationChannel: nil,
 		Wg:                       &sync.WaitGroup{},
-		t:                        time.NewTicker(10 * time.Second),
+		t:                        time.NewTicker(time.Duration(watchInterval) * time.Second),
 		done:                     make(chan struct{}),
 		currentDay:               time.Now().Day(),
 	}
