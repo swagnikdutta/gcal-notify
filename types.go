@@ -262,7 +262,8 @@ func (n *Notifier) notifyHueAgent(status EventStatus) {
 
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Printf("Error occurred while notifying subscribers: %s\n", err)
+		log.Printf("Error connecting with hue agent: %s\n", err)
+		return
 	}
 	defer res.Body.Close()
 
