@@ -152,7 +152,14 @@ func (n *Notifier) setUpcomingEvent() {
 	n.UpcomingEvent = nil // set this to null once the most recent event ends
 
 	for _, mergedEvent := range n.MergedEvents {
-		if time.Now().Before(mergedEvent.StartTime) {
+		now := time.Now()
+
+		onGoingEvent := (now.After(mergedEvent.StartTime) || now.Equal(mergedEvent.StartTime)) &&
+			(now.Before(mergedEvent.EndTime) || now.Equal(mergedEvent.EndTime))
+		upComingEvent := now.Before(mergedEvent.StartTime)
+
+		// if now >= start && now <=end
+		if onGoingEvent || upComingEvent {
 			n.UpcomingEvent = mergedEvent
 			break
 		}
