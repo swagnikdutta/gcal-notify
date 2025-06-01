@@ -67,10 +67,37 @@ func (e *Event) hasEnded() bool {
 	return false
 }
 
+type Throttler struct {
+	Mu          sync.Mutex
+	LastTrigger time.Time
+	Interval    time.Duration
+}
+
+func NewThrottler() *Throttler {
+	return &Throttler{
+		Mu:          sync.Mutex{},
+		LastTrigger: time.Time{},
+		Interval:    hueAgentRateLimitInterval * time.Second,
+	}
+}
+
+func (t *Throttler) Allow() bool {
+	t.Mu.Lock()
+	defer t.Mu.Unlock()
+
+	now := time.Now()
+	if t.LastTrigger.IsZero() || now.Sub(t.LastTrigger) >= t.Interval {
+		t.LastTrigger = now
+		return true
+	}
+	return false
+}
+
 type Notifier struct {
-	calendarId               string
-	Service                  *calendar.Service
-	Events                   []*Event
+	calendarId string
+	Service    *calendar.Service
+	Events     []*Event
+	// UpcomingEvent is either the currently in-progress event (if any), else the next immediate event that's coming up
 	UpcomingEvent            *Event
 	MergedEvents             []*Event
 	EventNotificationChannel *calendar.Channel
@@ -78,6 +105,7 @@ type Notifier struct {
 	t                        *time.Ticker
 	done                     chan struct{}
 	currentDay               int
+	throttler                *Throttler
 }
 
 func (n *Notifier) populateEvents(events *calendar.Events) {
@@ -166,11 +194,13 @@ func (n *Notifier) setUpcomingEvent() {
 	}
 
 	if n.UpcomingEvent != nil {
-		log.Printf("Upcoming event is: %q\n", n.UpcomingEvent.Summary)
+		log.Printf("Upcoming event: %q, starting at: %q, ending at: %q\n", n.UpcomingEvent.Summary,
+			n.UpcomingEvent.StartTime.Format(time.Kitchen), n.UpcomingEvent.EndTime.Format(time.Kitchen))
 	}
 }
 
 func (n *Notifier) syncCalendar() error {
+	log.Printf("Syncing calendar...")
 	now := time.Now()
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local).Format(time.RFC3339)
 	endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, time.Local).Format(time.RFC3339)
@@ -214,21 +244,11 @@ func (n *Notifier) watch() {
 				break
 			}
 
-			if n.UpcomingEvent.inProgress() {
-				retries := 2
-				log.Printf("Event %q started. Notifying subscribers...", n.UpcomingEvent.Summary)
-				startTime := n.UpcomingEvent.StartTime
-				delta := int(time.Now().Sub(startTime).Seconds())
-
-				fmt.Printf("delta: %d, 2*watchInterval: %d\n", delta, retries*watchInterval)
-
-				if int(delta) <= retries*watchInterval {
-					fmt.Println("Firing")
-					n.notifyHueAgent(eventStarted)
-				}
-
+			if n.UpcomingEvent.inProgress() && n.throttler.Allow() {
+				log.Printf("Event %q started. Notifying hue agent...", n.UpcomingEvent.Summary)
+				n.notifyHueAgent(eventStarted)
 			} else if n.UpcomingEvent.hasEnded() {
-				log.Printf("Event %q ended. Notifying subscribers...", n.UpcomingEvent.Summary)
+				log.Printf("Event %q ended. Notifying hue agent...", n.UpcomingEvent.Summary)
 				n.notifyHueAgent(eventEnded)
 				n.setUpcomingEvent()
 			}
@@ -237,6 +257,7 @@ func (n *Notifier) watch() {
 }
 
 func (n *Notifier) handleCalendarUpdates(w http.ResponseWriter, r *http.Request) {
+	// TODO: move this to a middleware
 	if n.EventNotificationChannel.Id != r.Header.Get(googHeaderChannelId) {
 		log.Printf("%s Forbidden operation. Channel id do not match or is missing from headers", http.StatusForbidden)
 		w.WriteHeader(http.StatusForbidden)
@@ -244,6 +265,7 @@ func (n *Notifier) handleCalendarUpdates(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	log.Println("Calendar updated")
 	err := n.syncCalendar()
 	if err != nil {
 		log.Println("error syncing calendar")
@@ -288,8 +310,9 @@ func NewNotifier() *Notifier {
 		UpcomingEvent:            nil,
 		EventNotificationChannel: nil,
 		Wg:                       &sync.WaitGroup{},
-		t:                        time.NewTicker(time.Duration(watchInterval) * time.Second),
+		t:                        time.NewTicker(1 * time.Second),
 		done:                     make(chan struct{}),
 		currentDay:               time.Now().Day(),
+		throttler:                NewThrottler(),
 	}
 }
