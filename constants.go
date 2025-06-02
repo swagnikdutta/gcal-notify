@@ -3,11 +3,14 @@ package main
 import "time"
 
 const (
-	googHeaderChannelId       string        = "X-Goog-Channel-Id"
-	channelTypeWebhook        string        = "web_hook"
-	eventStarted              EventStatus   = "event_started"
-	eventEnded                EventStatus   = "event_ended"
-	hueAgentRateLimitInterval time.Duration = 10
+	googHeaderChannelId string      = "X-Goog-Channel-Id"
+	channelTypeWebhook  string      = "web_hook"
+	eventStarted        EventStatus = "event_started"
+	eventEnded          EventStatus = "event_ended"
+
+	// related to rate limiting
+	NOTIFY_INTERVAL_ON_EVENT_START time.Duration = 1 * time.Minute
+	NOTIFY_INTERVAL_ON_NIL_EVENT   time.Duration = 5 * time.Minute
 
 	// related to env file variables
 	notificationChannelEndpoint = "NOTIFICATION_CHANNEL_ENDPOINT"

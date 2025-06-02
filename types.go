@@ -28,10 +28,6 @@ type Event struct {
 func (e *Event) updateStartTimeForRecurringEvent() {
 	now := time.Now()
 
-	// updatedStartTime := time.Date(
-	// 	now.Year(), now.Month(), now.Day(),
-	// 	e.StartTime.Hour(), e.StartTime.Minute(), e.StartTime.Second(), e.StartTime.Nanosecond(), e.StartTime.Location(),
-	// )
 	e.StartTime = time.Date(
 		now.Year(), now.Month(), now.Day(),
 		e.StartTime.Hour(), e.StartTime.Minute(), e.StartTime.Second(), e.StartTime.Nanosecond(), e.StartTime.Location(),
@@ -49,6 +45,14 @@ func (e1 *Event) completelyOverlapsWith(e2 *Event) bool {
 	return e1.EndTime.Equal(e2.EndTime) || e1.EndTime.After(e2.EndTime)
 }
 
+func (e *Event) isYetToStart() bool {
+	now := time.Now()
+	if now.Before(e.StartTime) {
+		return true
+	}
+	return false
+}
+
 func (e *Event) inProgress() bool {
 	now := time.Now()
 	if (now.Equal(e.StartTime) || now.After(e.StartTime)) && (now.Equal(e.EndTime) || now.Before(e.EndTime)) {
@@ -59,9 +63,7 @@ func (e *Event) inProgress() bool {
 
 func (e *Event) hasEnded() bool {
 	now := time.Now()
-	endTime := e.EndTime
-
-	if now.After(endTime) {
+	if now.After(e.EndTime) {
 		return true
 	}
 	return false
@@ -73,11 +75,11 @@ type Throttler struct {
 	Interval    time.Duration
 }
 
-func NewThrottler() *Throttler {
+func NewThrottler(interval time.Duration) *Throttler {
 	return &Throttler{
 		Mu:          sync.Mutex{},
 		LastTrigger: time.Time{},
-		Interval:    hueAgentRateLimitInterval * time.Second,
+		Interval:    interval,
 	}
 }
 
@@ -93,6 +95,12 @@ func (t *Throttler) Allow() bool {
 	return false
 }
 
+func (t *Throttler) Reset() {
+	t.Mu.Lock()
+	defer t.Mu.Unlock()
+	t.LastTrigger = time.Time{}
+}
+
 type Notifier struct {
 	calendarId string
 	Service    *calendar.Service
@@ -105,7 +113,8 @@ type Notifier struct {
 	t                        *time.Ticker
 	done                     chan struct{}
 	currentDay               int
-	throttler                *Throttler
+	StartEventThrottler      *Throttler
+	NilEventThrottler        *Throttler
 }
 
 func (n *Notifier) populateEvents(events *calendar.Events) {
@@ -140,10 +149,10 @@ func (n *Notifier) mergeOverlappingEvents() {
 		return e1.StartTime.Compare(e2.StartTime)
 	})
 
-	fmt.Printf("\nlist of events in calendar(sorted by start time) - %d\n", len(n.Events))
-	for idx, e := range n.Events {
-		fmt.Printf("%d) %s\n", idx+1, e.Summary)
-	}
+	// fmt.Printf("\nlist of events in calendar(sorted by start time) - %d\n", len(n.Events))
+	// for idx, e := range n.Events {
+	// 	fmt.Printf("%d) %s\n", idx+1, e.Summary)
+	// }
 
 	n.MergedEvents = nil
 	for _, currEvent := range n.Events {
@@ -169,11 +178,11 @@ func (n *Notifier) mergeOverlappingEvents() {
 		}
 	}
 
-	fmt.Printf("\nlist of merged events in calendar(sorted by start time) - %d\n", len(n.MergedEvents))
-	for idx, e := range n.MergedEvents {
-		fmt.Printf("%d) %s\n", idx+1, e.Summary)
-	}
-	fmt.Println()
+	// fmt.Printf("\nlist of merged events in calendar(sorted by start time) - %d\n", len(n.MergedEvents))
+	// for idx, e := range n.MergedEvents {
+	// 	fmt.Printf("%d) %s\n", idx+1, e.Summary)
+	// }
+	// fmt.Println()
 }
 
 func (n *Notifier) setUpcomingEvent() {
@@ -200,7 +209,11 @@ func (n *Notifier) setUpcomingEvent() {
 }
 
 func (n *Notifier) syncCalendar() error {
-	log.Printf("Syncing calendar...")
+	// Reset throttle offsets
+	n.NilEventThrottler.Reset()
+	n.StartEventThrottler.Reset()
+
+	log.Println("Syncing calendar...")
 	now := time.Now()
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local).Format(time.RFC3339)
 	endOfDay := time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, time.Local).Format(time.RFC3339)
@@ -236,19 +249,42 @@ func (n *Notifier) watch() {
 				err := n.syncCalendar()
 				if err != nil {
 					log.Println("error syncing calendar post midnight")
-					break
+					continue
 				}
 			}
 
 			if n.UpcomingEvent == nil {
-				break
+				// Consider this situation. An ongoing event is dragged away, making it either a past event or an
+				// upcoming event. In either case, the light must go off - which is why we are notifying the hue
+				// agent to turn the bulb off. But, since this ticker will run at very short intervals (1 sec),
+				// we don't want to flood hue-agent with "turn bulb off" requests.
+				// Hence, we rate-limit.
+				if n.NilEventThrottler.Allow() {
+					n.notifyHueAgent(eventEnded)
+				}
+				continue
 			}
 
-			if n.UpcomingEvent.inProgress() && n.throttler.Allow() {
-				log.Printf("Event %q started. Notifying hue agent...", n.UpcomingEvent.Summary)
+			if n.UpcomingEvent.isYetToStart() && n.NilEventThrottler.Allow() {
+				// Similar complicated use case as above.
+				// If the event is dragged down (opposite to the above case), the bulb has to go off immediately, and
+				// the n.UpcomingEvent won't be nil this time - hence the above if-block won't cover it.
+				//
+				// Also, it's safe to reuse the NilEventThrottler because, at any given time there are two
+				// possibilities. Either UpcomingEvent will be nil or it won't. So there is no need for a
+				// separate 'YetToStartThrottler' for this use case.
+				n.notifyHueAgent(eventEnded)
+				continue
+			}
+
+			if n.UpcomingEvent.inProgress() && n.StartEventThrottler.Allow() {
+				log.Printf("Event %q started. Notifying hue agent: %q\n", n.UpcomingEvent.Summary, eventStarted)
 				n.notifyHueAgent(eventStarted)
-			} else if n.UpcomingEvent.hasEnded() {
-				log.Printf("Event %q ended. Notifying hue agent...", n.UpcomingEvent.Summary)
+				continue
+			}
+
+			if n.UpcomingEvent.hasEnded() {
+				log.Printf("Event %q ended. Notifying hue agent: %q\n", n.UpcomingEvent.Summary, eventEnded)
 				n.notifyHueAgent(eventEnded)
 				n.setUpcomingEvent()
 			}
@@ -297,8 +333,7 @@ func (n *Notifier) notifyHueAgent(status EventStatus) {
 	defer res.Body.Close()
 
 	bodyBytes, _ := io.ReadAll(res.Body)
-	log.Printf("Successfully notified subscribers. Statuscode: %v\n", res.StatusCode)
-	log.Printf(string(bodyBytes))
+	log.Printf("Successfully notified hue agent on %q. Status code: %v. Response: %v\n", status, res.StatusCode, string(bodyBytes))
 }
 
 func NewNotifier() *Notifier {
@@ -313,6 +348,7 @@ func NewNotifier() *Notifier {
 		t:                        time.NewTicker(1 * time.Second),
 		done:                     make(chan struct{}),
 		currentDay:               time.Now().Day(),
-		throttler:                NewThrottler(),
+		StartEventThrottler:      NewThrottler(NOTIFY_INTERVAL_ON_EVENT_START),
+		NilEventThrottler:        NewThrottler(NOTIFY_INTERVAL_ON_NIL_EVENT),
 	}
 }
