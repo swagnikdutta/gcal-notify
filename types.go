@@ -317,7 +317,9 @@ func (n *Notifier) healthCheck(w http.ResponseWriter, _ *http.Request) {
 func (n *Notifier) notifyHueAgent(status EventStatus) {
 	requestUrl := fmt.Sprintf("%s/light/state", os.Getenv(hueAgentBaseUrl))
 	payloadBytes, _ := json.Marshal(map[string]interface{}{
-		"on": status == eventStarted,
+		"on":         status == eventStarted,
+		"mirek":      colorTemperature,
+		"brightness": brightness,
 	})
 
 	req, err := http.NewRequest(http.MethodPost, requestUrl, bytes.NewBuffer(payloadBytes))
